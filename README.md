@@ -4,9 +4,10 @@ Polskojęzyczna aplikacja PWA do zapisywania sprzętu domowego, dokumentów, gwa
 
 ## Uruchomienie i testy
 
-Wymagane Node.js 20+ do testów. Aplikacja jest statyczna i nie wymaga instalowania zależności ani procesu budowania.
+Wymagane Node.js 20+ do testów. Produkcja jest statyczna. Jedyna zależność instalowana przez npm służy do testowania IndexedDB.
 
 ```sh
+npm ci
 npm test
 python3 -m http.server 8080
 ```
@@ -25,3 +26,9 @@ Tryb offline jest dostępny po pierwszym pełnym załadowaniu. Kopię zapasową 
 ## Architektura
 
 `model.js` zawiera walidację, obliczenia i logikę domeny. `storage.js` odpowiada za zapisy, dokumenty i wersjonowany format kopii. `app.js` odpowiada za interfejs. Rozdzielenie tych odpowiedzialności pozwala później dodać tłumaczenia, synchronizację lub osobne wersje mobilne bez zmiany reguł gwarancji. PDF.js z licencją Apache jest przechowywany lokalnie w `pdf/`.
+
+## Paragony i lokalny OCR
+
+IndexedDB v2 zachowuje magazyn produktów i dodaje osobne archiwum. Kopie v2 zawierają zdjęcia paragonów, pozycje i powiązania. Kopie v1 można odtworzyć. Paragony dodane do produktów w starszych wersjach nadal są dostępne w szczegółach produktów.
+
+Folder `ocr/` zawiera Tesseract.js 6.0.1, jego silnik LSTM oraz polski model `@tesseract.js-data/pol` 1.0.0 (best_int). Licencję Apache 2.0 silnika i danych Tesseract dołączono w tym folderze. Pliki są serwowane z tej samej domeny i trafiają do cache offline. Rozpoznawanie odbywa się w lokalnym workerze. Po odczycie użytkownik sprawdza kwoty oraz wybiera pozycje, dla których chce utworzyć produkty.

@@ -1,5 +1,5 @@
-import {categories,currencies,states,caseStates,documentKinds,maxFile,maxBackup,localDay,warrantyDate,warranty,selectProducts,portfolio,calendarFile,productValid,sniff} from './model.js';
-import {openStorage,exportBackup,importBackup} from './storage.js';
+import {categories,currencies,states,caseStates,documentKinds,maxFile,maxBackup,localDay,warrantyDate,warranty,selectProducts,portfolio,calendarFile,productValid,sniff,normalize,receiptCategories,receiptValid,receiptSummary,receiptProducts} from './model.js';
+import {openStorage,exportBackup,importArchive} from './storage.js';
 
 const $=id=>document.getElementById(id);
 const elem=(name,text,cls)=>{const node=document.createElement(name);if(text!==undefined)node.textContent=text;if(cls)node.className=cls;return node;};
@@ -7,7 +7,7 @@ const append=(parent,...nodes)=>{parent.append(...nodes);return parent;};
 const paths={dashboard:'M3 3h7v7H3zm11 0h7v7h-7zM3 14h7v7H3zm11 0h7v7h-7z',box:'M3 8l9-5 9 5v9l-9 5-9-5zM3 8l9 5 9-5M12 13v9',calendar:'M3 5h18v16H3zm4-2v4m10-4v4M3 10h18m-13 4h2m4 0h2m-8 3h2',settings:'M4 6h16M4 12h16M4 18h16M8 4v4m8 2v4m-6 2v4',shield:'M12 22c5-2.5 8-5.5 8-10V5l-8-3-8 3v7c0 4.5 3 7.5 8 10zM8.5 12l2.5 2.5 4.5-5',clock:'M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18zm0 4v5l3 2',archive:'M3 4h18v4H3zm1 4v12h16V8m-11 4h6',plus:'M12 4v16M4 12h16',arrow:'M4 12h15m-6-6 6 6-6 6',sun:'M12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8zM12 2v3m0 14v3M2 12h3m14 0h3M5 5l2 2m10 10 2 2m0-14-2 2M7 17l-2 2'};
 const svg=(tag,attrs={})=>{const e=document.createElementNS('http://www.w3.org/2000/svg',tag);for(const [k,v] of Object.entries(attrs))e.setAttribute(k,v);return e;};
 const icon=name=>append(svg('svg',{class:'ico',viewBox:'0 0 24 24','aria-hidden':'true'}),svg('path',{d:paths[name]}));
-const ui={dashboard:'Pulpit',products:'Produkty',calendar:'Terminy',settings:'Ustawienia'};
+const ui={dashboard:'Pulpit',products:'Produkty',receipts:'Paragony',calendar:'Terminy',settings:'Ustawienia'};
 const filterLabels={all:'Wszystkie',valid:'Aktywne gwarancje',soon:'Kończą się do 30 dni',expired:'Gwarancje zakończone',none:'Bez gwarancji',archived:'Sprzedane i wycofane'};
 const sortLabels={recent:'Ostatnio dodane',purchase:'Data zakupu',warranty:'Koniec gwarancji'};
 const dateFormat=new Intl.DateTimeFormat('pl-PL',{dateStyle:'medium',timeZone:'UTC'});
@@ -18,11 +18,11 @@ const readSetting=(key,fallback)=>{try{return localStorage.getItem(key)??fallbac
 const writeSetting=(key,value)=>{try{localStorage.setItem(key,value);}catch{notice('Nie udało się zapisać ustawienia na tym urządzeniu.');}};
 const activeProducts=()=>products.filter(p=>p.state==='W użyciu');
 const editor=$('editor'),editorBody=$('editorBody'),view=$('view');
-let storage,products=[],updateNotice,uploadImport=false,opener,selectedDay=localDay(),month=selectedDay.slice(0,7)+'-01';
+let storage,products=[],receipts=[],updateNotice,uploadImport=false,opener,selectedDay=localDay(),month=selectedDay.slice(0,7)+'-01';
 let query='',filter='all',sort='recent',theme=readSetting('domowy-theme','dark'),large=readSetting('domowy-large','false');
 let pending=false,disposePreview;
 const previews=new Set();
-const homeIcons={dashboard:'dashboard',products:'box',calendar:'calendar',settings:'settings'};
+const homeIcons={dashboard:'dashboard',products:'box',receipts:'archive',calendar:'calendar',settings:'settings'};
 
 function notice(text=''){const status=$('status');status.hidden=!text;status.textContent=text;}
 function errorText(e){return e?.name==='QuotaExceededError'?'Brak miejsca na urządzeniu. Usuń zbędne pliki lub zwolnij pamięć.':e?.message||'Operacja nie powiodła się.';}
@@ -179,7 +179,7 @@ function settings(){
   const backup=panel('Kopia zapasowa');
   const exportBtn=button('Eksportuj kopię',async()=>{
     exportBtn.disabled=true;
-    try{download(await exportBackup(await storage.list()),'VOLTYRO-kopia-'+localDay()+'.json');notice('Kopia zapasowa została przygotowana. Zachowaj plik w prywatnym miejscu.');}
+    try{const snapshot=await storage.snapshot();download(await exportBackup(snapshot.products,snapshot.receipts),'VOLTYRO-kopia-'+localDay()+'.json');notice('Kopia zapasowa została przygotowana. Zachowaj plik w prywatnym miejscu.');}
     catch(e){notice(errorText(e));}finally{exportBtn.disabled=false;}
   },{cls:'primary'});
   const input=elem('input');input.type='file';input.accept='.json,application/json';input.hidden=true;
@@ -189,13 +189,13 @@ function settings(){
     if(!file||uploadImport)return;
     uploadImport=true;importBtn.disabled=true;
     try{
-      const imported=await importBackup(file);
-      if(await ask('Przywrócić kopię?','Poprawna kopia zawiera '+imported.length+' produktów. Import zastąpi bieżące produkty, dokumenty i historię na tym urządzeniu.')){
-        await storage.replace(imported);await refresh();notice('Przywrócono kopię zapasową.');
+      const imported=await importArchive(file);
+      if(await ask('Przywrócić kopię?','Poprawna kopia zawiera '+imported.products.length+' produktów i '+imported.receipts.length+' paragonów. Import zastąpi bieżące dane na tym urządzeniu.')){
+        await storage.replace(imported.products,imported.receipts);await refresh();notice('Przywrócono kopię zapasową.');
       }
     }catch(e){notice(errorText(e));}finally{uploadImport=false;importBtn.disabled=false;}
   };
-  backup.append(elem('p','Kopia zawiera produkty, dokumenty i historię spraw. Maksymalny rozmiar kopii to 160 MB.','muted'),
+  backup.append(elem('p','Kopia zawiera produkty, paragony, pozycje zakupowe, dokumenty i historię spraw. Maksymalny rozmiar kopii to 160 MB.','muted'),
     actions(exportBtn,importBtn,input),elem('p','Uwaga: usunięcie danych przeglądarki lub aplikacji może spowodować utratę lokalnych dokumentów. Zapisuj kopię poza aplikacją.','notice'));
   const install=panel('Instalacja i terminy');
   install.append(elem('p','iPhone: otwórz w Safari i wybierz Udostępnij → Dodaj do ekranu początkowego.'),
@@ -213,9 +213,9 @@ function render(){
     if(key===page)a.setAttribute('aria-current','page');
     return append(a,icon(homeIcons[key]),document.createTextNode(name));
   }));
-  view.replaceChildren();({dashboard,products:productList,calendar,settings})[page]();
+  view.replaceChildren();({dashboard,products:productList,receipts:receiptList,calendar,settings})[page]();
 }
-async function refresh(){products=await storage.list();render();}
+async function refresh(){({products,receipts}=await storage.snapshot());render();}
 function open(title,body){
   if(!editor.open){opener=document.activeElement;editor.showModal();}
   disposePreview?.();disposePreview=undefined;
@@ -223,6 +223,18 @@ function open(title,body){
   previews.clear();
   $('editorTitle').textContent=title;editorBody.replaceChildren(body);editor.scrollTop=0;
 }
+const visual=window.visualViewport;
+if(visual){
+  const fitDialog=()=>{
+    document.documentElement.style.setProperty('--keyboard-inset',Math.max(0,innerHeight-visual.height-visual.offsetTop)+'px');
+  };
+  visual.addEventListener('resize',fitDialog);
+  visual.addEventListener('scroll',fitDialog);
+}
+editor.addEventListener('focusin',event=>{
+  if(window.matchMedia('(max-width: 690px)').matches&&event.target.matches('input,textarea'))
+    event.target.scrollIntoView({block:'nearest'});
+});
 editor.addEventListener('close',()=>{disposePreview?.();disposePreview=undefined;for(const url of previews)URL.revokeObjectURL(url);previews.clear();if(opener?.isConnected)opener.focus();});
 $('closeEditor').onclick=()=>{if(!pending)editor.close();};
 editor.addEventListener('cancel',event=>{if(pending)event.preventDefault();});
@@ -247,6 +259,9 @@ function attachmentPicker(initial=[],service=false){
   choose.lastChild.accept='image/*,.pdf,application/pdf';choose.lastChild.multiple=true;
   const camera=control('Zrób zdjęcie aparatem','camera',{type:'file'});
   camera.lastChild.accept='image/*';camera.lastChild.setAttribute('capture','environment');
+  choose.hidden=camera.hidden=true;
+  const gallery=button('Wybierz z galerii',()=>choose.lastChild.click());
+  const capture=button('Zrób zdjęcie',()=>camera.lastChild.click());
   const status=elem('p',undefined,'muted');status.setAttribute('role','status');
   const listing=elem('div');
   function renderFiles(){
@@ -271,7 +286,7 @@ function attachmentPicker(initial=[],service=false){
     });
   };
   choose.lastChild.onchange=camera.lastChild.onchange=addFiles;
-  wrap.append(elem('h3',service?'Dokumenty serwisowe':'Zdjęcia i dokumenty'),kind,choose,camera,status,listing);renderFiles();
+  wrap.append(elem('h3',service?'Dokumenty serwisowe':'Zdjęcia i dokumenty'),kind,actions(capture,gallery),choose,camera,status,listing);renderFiles();
   return {wrap,list:async()=>{await additions;return docs;}};
 }
 function dialogForm(fields,attach,onSave,back){
@@ -315,11 +330,14 @@ function productForm(previous){
     field('Waluta','currency',{choices:currencies,value:p.currency??'PLN'}),months,until,
     append(elem('label',undefined,'check wide'),override,elem('span','Ustaw datę końca ręcznie')),
     field('Status produktu','state',{choices:states,value:p.state??states[0]}),notes);
+  const linked=receiptChoice(p.receiptId??'');
+  fields.append(linked);
   const attach=attachmentPicker(p.docs);
   const form=dialogForm(fields,attach,async(d,docs)=>{
     const record={id:p.id??crypto.randomUUID(),created:p.created??new Date().toISOString(),history:p.history??[],docs,
       name:clean(d.name),brand:clean(d.brand),model:clean(d.model),serial:clean(d.serial),category:d.category,purchase:d.purchase,
       store:clean(d.store),price:valueNumber(d.price),currency:d.currency,months:Number(d.months||0),until:d.manual?d.until:'',state:d.state,notes:clean(d.notes)};
+    if(d.receiptId)record.receiptId=d.receiptId;
     await saveProduct(record);editor.close();notice(previous?'Zapisano zmiany produktu.':'Dodano produkt.');
   },()=>{if(!pending){if(previous)detail(previous.id);else editor.close();}});
   open(previous?'Edytuj produkt':'Dodaj produkt',form);
@@ -331,7 +349,7 @@ function documentRow(doc,goBack){
 }
 function preview(doc,goBack){
   const body=elem('section');
-  const go=button('Wróć do produktu',goBack,{cls:'link-button'});
+  const go=button('Wróć do szczegółów',goBack,{cls:'link-button'});
   body.append(go);
   open(doc.name,body);
   const url=objectURL(doc.blob);
@@ -437,6 +455,8 @@ function detail(id){
     history.append(item);
   }
   if(!p.history.length)history.append(elem('p','Brak zapisanych spraw.','muted'));
+  const linked=receipts.find(r=>r.id===p.receiptId);
+  if(linked)body.append(append(panel('Powiązany paragon'),button(linked.store+' · '+formatDate(linked.date),()=>receiptDetail(linked.id))));
   body.append(docs,history);open(p.name,body);
   const cover=p.docs.find(d=>d.kind===documentKinds[0]&&d.blob.type.startsWith('image/'));
   if(cover){const img=elem('img',undefined,'details-photo');img.src=objectURL(cover.blob);img.alt='Zdjęcie urządzenia';img.onerror=()=>img.remove();body.insertBefore(img,overview);}
@@ -459,6 +479,161 @@ function historyForm(p,h){
     detail(p.id);notice('Zapisano sprawę.');
   },()=>{if(!pending)detail(p.id);}));
 }
+function receiptChoice(value){
+  const choices={'':'Bez powiązania'};
+  for(const r of sortedReceipts())choices[r.id]=[r.store,formatDate(r.date),price(r.total,r.currency)].join(' · ');
+  return control('Powiązany paragon','receiptId',{choices,value});
+}
+
+function sortedReceipts(){
+  return [...receipts].sort((a,b)=>b.date.localeCompare(a.date));
+}
+
+let expenseMonth=localDay().slice(0,7), receiptSearch='', receiptFilter='';
+function receiptList(){
+  const list=elem('div',undefined,'rows');
+  const totals=panel('Wydatki w miesiącu');
+  const monthField=control('Miesiąc','expenses',{value:expenseMonth,type:'month'});
+  const summary=elem('div',undefined,'stack');
+  function drawSummary(){
+    const data=receiptSummary(receipts,expenseMonth);
+    summary.replaceChildren(elem('p','Liczba paragonów: '+data.count),
+      elem('strong',Object.entries(data.totals).map(([c,n])=>price(n/100,c)).join(' · ')||'Brak zapisanych kwot'));
+    for(const [category,group] of Object.entries(data.categories))
+      summary.append(elem('p',category+' · '+Object.entries(group).map(([c,n])=>price(n/100,c)).join(' · '),'muted'));
+  }
+  monthField.lastChild.oninput=()=>{expenseMonth=monthField.lastChild.value;drawSummary();};
+  totals.append(monthField,summary);drawSummary();
+  const search=control('Szukaj w paragonach','receiptQuery',{type:'search',value:receiptSearch});
+  const filter=control('Kategoria zakupów','receiptFilter',{value:receiptFilter,choices:{'':'Wszystkie',...Object.fromEntries(receiptCategories.map(c=>[c,c]))}});
+  function drawList(){
+    const needle=normalize(receiptSearch.trim());
+    const filtered=sortedReceipts().filter(r=>(!receiptFilter||r.category===receiptFilter)&&
+      normalize([r.store,r.notes,r.category,...r.items.map(i=>i.name)].join(' ')).includes(needle));
+    list.replaceChildren(...filtered.map(r=>append(button('',()=>receiptDetail(r.id),{cls:'item'}),
+      append(elem('span'),elem('strong',r.store),elem('small',r.category+' · '+formatDate(r.date))),
+      elem('span',price(r.total,r.currency),'amount'))));
+    if(!filtered.length)list.append(empty('archive','Brak paragonów',receipts.length?'Zmień warunki wyszukiwania.':'Dodaj paragon lub fakturę za dowolne zakupy.'));
+  }
+  search.lastChild.oninput=()=>{receiptSearch=search.lastChild.value;drawList();};
+  filter.lastChild.onchange=()=>{receiptFilter=filter.lastChild.value;drawList();};
+  view.append(append(elem('div',undefined,'section-head'),elem('h1','Paragony'),
+    actions(button('Dodaj paragon',()=>receiptForm(),{cls:'primary',glyph:'plus'}),button('Skanuj paragon',()=>receiptForm(undefined,true)))),
+    totals,append(elem('div',undefined,'fields stack'),search,filter),append(elem('div',undefined,'stack'),list));
+  drawList();
+}
+
+function receiptDetail(id){
+  const r=receipts.find(receipt=>receipt.id===id);
+  if(!r)return;
+  const back=()=>receiptDetail(id);
+  const body=elem('div',undefined,'stack');
+  body.append(elem('p',[formatDate(r.date),r.category,price(r.total,r.currency)].join(' · ')));
+  if(r.notes)body.append(elem('p',r.notes,'notice'));
+  body.append(actions(button('Edytuj paragon',()=>receiptForm(r),{cls:'primary'}),button('Usuń paragon',async()=>{
+    if(!await ask('Usunąć paragon?','Powiązane produkty pozostaną zapisane. Dokument i pozycje znikną z archiwum.'))return;
+    try{await storage.removeReceipt(r.id);await refresh();editor.close();notice('Usunięto paragon.');}
+    catch(error){notice(errorText(error));}
+  },{cls:'danger'})));
+  if(r.docs.length)body.append(append(panel('Zdjęcia i dokumenty'),...r.docs.map(doc=>documentRow(doc,back))));
+  if(r.items.length)body.append(append(panel('Pozycje zakupowe'),...r.items.map(item=>elem('p',item.name+' · '+price(item.price,r.currency)))));
+  const linked=products.filter(p=>p.receiptId===id);
+  if(linked.length)body.append(append(panel('Powiązane produkty'),...linked.map(p=>rowToProduct(p))));
+  open(r.store,body);
+}
+const rowToProduct=p=>button(p.name,()=>detail(p.id));
+
+function receiptForm(previous,scanFirst=false){
+  const r=previous??{id:crypto.randomUUID(),store:'',date:'',total:null,currency:'PLN',category:'Inne',notes:'',docs:[],items:[]};
+  const store=control('Sklep','store',{value:r.store,required:true,maxLength:250});
+  const date=control('Data zakupu','date',{value:r.date,type:'date'});
+  const total=control('Kwota całkowita','total',{value:r.total,type:'number',min:0,max:1e9,step:.01});
+  const fields=append(elem('div',undefined,'fields'),store,date,total,
+    control('Waluta','currency',{choices:currencies,value:r.currency}),
+    control('Kategoria zakupów','category',{choices:receiptCategories,value:r.category}),
+    control('Notatki','notes',{type:'textarea',value:r.notes,maxLength:5000}));
+  const attachment=attachmentPicker(r.docs);
+  attachment.wrap.querySelector('[name=docKind]').value='Paragon lub faktura';
+  attachment.wrap.querySelector('[name=docKind]').closest('label').hidden=true;
+  const positionPanel=panel('Pozycje zakupowe');
+  const review=elem('p',undefined,'notice');review.hidden=true;review.id='ocr-review';
+  const results=elem('div');
+  const raw=elem('details');raw.hidden=true;
+  const rawText=elem('p',undefined,'ocr-text');
+  raw.append(elem('summary','Tekst odczytany ze zdjęcia'),rawText);
+  const scanStatus=elem('p',undefined,'muted');scanStatus.setAttribute('role','status');
+  const scan=button('Odczytaj dane ze zdjęcia',async()=>{
+    scan.disabled=true;
+    const controller=new AbortController();
+    disposePreview=()=>controller.abort();
+    try{
+      const photo=(await attachment.list()).findLast(doc=>doc.blob.type.startsWith('image/'));
+      if(!photo)throw Error('Najpierw zrób zdjęcie lub wybierz je z galerii.');
+      scanStatus.textContent='Skanowanie paragonu na urządzeniu…';
+      const {scanReceipt}=await import('./receipt-ocr.js');
+      const result=await scanReceipt(photo.blob,progress=>{
+        if(progress.status==='recognizing text')scanStatus.textContent='Skanowanie… '+Math.round(progress.progress*100)+'%';
+      },controller.signal);
+      if(controller.signal.aborted)return;
+      if(!store.lastChild.value&&result.store)store.lastChild.value=result.store.slice(0,250);
+      if(!date.lastChild.value)date.lastChild.value=result.date;
+      if(!total.lastChild.value&&result.total!==null)total.lastChild.value=result.total;
+      const keyFor=item=>normalize(item.name)+'|'+item.price;
+      const counts=new Map();
+      for(const item of readItems()){const key=keyFor(item);counts.set(key,(counts.get(key)??0)+1);}
+      for(const item of result.items.slice(0,200)){
+        const key=keyFor(item);
+        if(counts.get(key)>0)counts.set(key,counts.get(key)-1);
+        else if(results.childElementCount<200)addItem(item);
+      }
+      review.hidden=false;
+      for(const field of [store,date,total])field.lastChild.setAttribute('aria-describedby',review.id);
+      review.textContent='Sprawdź sklep, datę, kwotę, walutę i wszystkie pozycje. Pola bez wiarygodnego odczytu pozostawiono puste.';
+      raw.hidden=!result.raw.trim();rawText.textContent=result.raw;
+      scanStatus.textContent=result.raw.trim()?'Odczyt zakończony. Sprawdź dane w formularzu.':'Nie odczytano tekstu. Wpisz dane ręcznie, zdjęcie można zachować.';
+    }catch(error){
+      if(!controller.signal.aborted)scanStatus.textContent=errorText(error)+' Możesz uzupełnić dane ręcznie.';
+    }finally{scan.disabled=false;}
+  });
+  function readItems(){
+    return [...results.children].map(line=>({
+      id:line.dataset.itemId,
+      name:line.querySelector('[name=itemName]').value.trim(),
+      price:valueNumber(line.querySelector('[name=itemPrice]').value)
+    }));
+  }
+  function addItem(item={}){
+    if(results.childElementCount>=200)return;
+    const name=control('Nazwa pozycji','itemName',{value:item.name,required:true,maxLength:120});
+    const cost=control('Cena pozycji','itemPrice',{value:item.price,type:'number',min:0,max:1e9,step:.01});
+    const select=elem('input');select.type='checkbox';select.name='createProduct';
+    const linked=item.id&&products.some(p=>p.id===item.id);
+    select.disabled=Boolean(linked);
+    const line=append(elem('div',undefined,'fields docs'),name,cost,
+      append(elem('label',undefined,'check'),select,elem('span',linked?'Produkt już zapisany':'Dodaj jako produkt')),
+      button('Usuń pozycję',()=>line.remove()));
+    line.dataset.itemId=item.id??crypto.randomUUID();results.append(line);
+  }
+  r.items.forEach(addItem);
+  positionPanel.append(results,actions(button('Dodaj pozycję',()=>addItem())));
+  const scanning=append(panel('Skanuj paragon'),elem('p','Zdjęcie zostaje na urządzeniu. Odczytane dane możesz poprawić przed zapisaniem.','muted'),actions(scan),scanStatus,review,raw);
+  const body=scanFirst?append(elem('div'),attachment.wrap,scanning,fields,positionPanel):append(elem('div'),fields,attachment.wrap,scanning,positionPanel);
+  const form=dialogForm(body,{wrap:elem('span'),list:attachment.list},async(data,docs)=>{
+    if(!scan.disabled){
+      const saved={...r,store:data.store.trim(),date:data.date,total:valueNumber(data.total),currency:data.currency,
+        category:data.category,notes:data.notes.trim(),docs,items:readItems()};
+      if(!receiptValid(saved))throw Error('Sprawdź nazwę sklepu, datę, kwotę i pozycje.');
+      if(!previous&&receipts.length>=5000)throw Error('Osiągnięto limit 5000 paragonów.');
+      const selected=new Set([...results.children].filter(line=>line.querySelector('[name=createProduct]').checked).map(line=>line.dataset.itemId));
+      const created=receiptProducts(saved,selected);
+      if(products.length+created.length>1000)throw Error('Osiągnięto limit 1000 produktów.');
+      await storage.saveReceipt(saved,created);
+      await refresh();receiptDetail(saved.id);notice('Zapisano paragon.');
+    }else throw Error('Poczekaj na zakończenie skanowania.');
+  },()=>{if(previous)receiptDetail(previous.id);else editor.close();});
+  open(previous?'Edytuj paragon':scanFirst?'Skanuj paragon':'Dodaj paragon',form);
+}
+
 async function prepareWorker(){
   if(!('serviceWorker' in navigator))return;
   const worker=navigator.serviceWorker;

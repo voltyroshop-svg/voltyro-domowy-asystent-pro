@@ -104,3 +104,35 @@ export async function sniff(blob) {
   if(s.slice(4,8)==='ftyp'&&/^(heic|heix|hevc|hevx|mif1|msf1)$/.test(s.slice(8,12)))return 'image/heic';
   throw Error('Wybierz prawidłowe zdjęcie (JPG, PNG, WebP, GIF lub HEIC) albo PDF.');
 }
+
+export const receiptCategories=['Spożywcze','Odzież','Kosmetyki','Elektronika','Dom i ogród','Usługi','Inne'];
+export function receiptValid(r) {
+  return Boolean(r && id(r.id) && text(r.store) && r.store.trim() &&
+    optionalDate(r.date) && optionalMoney(r.total) && currencies.includes(r.currency) &&
+    receiptCategories.includes(r.category) && text(r.notes,5000) &&
+    Array.isArray(r.docs) && r.docs.length<=100 && r.docs.every(okDoc) && allUnique(r.docs) &&
+    Array.isArray(r.items) && r.items.length<=200 && r.items.every(item=>
+      item && id(item.id) && text(item.name,120) && item.name.trim() && optionalMoney(item.price)) && allUnique(r.items));
+}
+
+export function receiptSummary(receipts, month) {
+  const list=receipts.filter(r=>r.date.slice(0,7)===month);
+  const totals={}, categories={};
+  for(const r of list) {
+    if(r.total===null)continue;
+    const cents=Math.round(r.total*100);
+    totals[r.currency]=(totals[r.currency]??0)+cents;
+    const group=categories[r.category]??={};
+    group[r.currency]=(group[r.currency]??0)+cents;
+  }
+  return { count:list.length, totals, categories };
+}
+
+export function receiptProducts(receipt, selected) {
+  return receipt.items.filter(item=>selected.has(item.id)).map(item=>({
+    id:item.id, receiptId:receipt.id, name:item.name, brand:'', model:'', serial:'',
+    category:'Inne', purchase:receipt.date, until:'', months:0, price:item.price,
+    currency:receipt.currency, store:receipt.store, state:'W użyciu', notes:'',
+    created:new Date().toISOString(), docs:[], history:[]
+  }));
+}

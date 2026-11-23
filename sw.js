@@ -1,6 +1,6 @@
 const prefix='voltyro-domowy-shell-';
-const version=prefix+'1';
-const files=['./','./index.html','./style.css','./app.js','./storage.js','./model.js','./manifest.webmanifest','./icon.svg',
+const version=prefix+'2';
+const files=['./','./index.html','./style.css','./app.js','./storage.js','./model.js','./receipt-ocr.js','./ocr/tesseract.min.js','./ocr/worker.min.js','./ocr/tesseract-core-lstm.wasm.js','./ocr/pol.traineddata.gz','./manifest.webmanifest','./icon.svg',
   './pdf/pdf.min.js', './pdf/pdf.worker.min.js',
   './pdf/fonts/FoxitDingbats.pfb',
   './pdf/fonts/FoxitFixed.pfb',

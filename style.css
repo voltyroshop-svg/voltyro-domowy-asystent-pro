@@ -12,3 +12,12 @@ main{width:100%;max-width:1440px;padding:0 clamp(15px,3.7vw,48px) 42px;margin:0 
 @media(prefers-reduced-motion:reduce){*{transition:none!important}}
 .dashboard-search{display:grid;grid-template-columns:minmax(0,1fr) auto}
 .pdf-surface{max-width:100%;max-height:64vh;overflow:auto;margin-top:10px;background:var(--base);border-radius:8px}.pdf-surface canvas{display:block}
+
+.ocr-text{white-space:pre-wrap;overflow-wrap:anywhere}
+dialog{overscroll-behavior:contain;scroll-padding-block:16px}
+@media(max-width:690px){
+  nav{grid-template-columns:repeat(5,minmax(0,1fr))}
+  dialog{max-height:calc(100dvh - var(--keyboard-inset,0px) - 20px);margin-bottom:calc(var(--keyboard-inset,0px) + 10px)}
+  input,textarea,select{font-size:max(16px,1rem)}
+}
+[hidden]{display:none!important}

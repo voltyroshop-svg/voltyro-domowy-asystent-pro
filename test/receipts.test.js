@@ -61,7 +61,7 @@ test('Polish receipt parsing leaves ambiguous values empty and ignores tax lines
 
 test('old backup still imports and invalid links in a new backup are rejected',async()=>{
   const legacy=new Blob(['{"format":"voltyro-domowy","version":1,"products":[]}']);
-  assert.deepEqual(await importArchive(legacy),{products:[],receipts:[]});
+  assert.deepEqual(await importArchive(legacy),{products:[],receipts:[],categories:[]});
   const p=receiptProducts(receipt({items:[{id:crypto.randomUUID(),name:'Test',price:null}]}),{has:()=>true});
   await assert.rejects(importArchive(await exportBackup(p,[])),/uszkodzona/);
 });
@@ -69,4 +69,42 @@ test('old backup still imports and invalid links in a new backup are rejected',a
 test('recognition does not prefill a total that conflicts with a payment amount',()=>{
   const raw='Sklep\nPARAGON FISKALNY\nChleb 58,63 A\nSUMA PLN 50,63\nPłatność Karta 58,63';
   assert.equal(parseReceipt(raw).total,null);
+});
+
+test('custom product categories survive deletion of the last product and a backup restore',async()=>{
+  const db=await openStorage(crypto.randomUUID());
+  const r=receipt({docs:[],items:[{id:crypto.randomUUID(),name:'Krzesło',price:null}]});
+  const [p]=receiptProducts(r,new Set([r.items[0].id]));
+  p.category='Wyposażenie mieszkania';
+  delete p.receiptId;
+  await db.save(p,p.category);
+  await db.remove(p.id);
+  const snapshot=await db.snapshot();
+  assert.deepEqual(snapshot.categories,[p.category]);
+  const restored=await importArchive(await exportBackup(snapshot.products,snapshot.receipts,snapshot.categories));
+  const target=await openStorage(crypto.randomUUID());
+  await target.replace(restored.products,restored.receipts,restored.categories);
+  assert.deepEqual((await target.snapshot()).categories,[p.category]);
+});
+
+test('v2 archives with receipt links and images remain valid in the category-aware version',async()=>{
+  const r=receipt({items:[{id:crypto.randomUUID(),name:'Buty',price:12}]});
+  const products=receiptProducts(r,new Set([r.items[0].id]));
+  const old=JSON.parse(await (await exportBackup(products,[r])).text());
+  old.version=2;
+  delete old.categories;
+  const restored=await importArchive(new Blob([JSON.stringify(old)]));
+  assert.equal(restored.products[0].receiptId,r.id);
+  assert.equal(await restored.receipts[0].docs[0].blob.text(),'%PDF-test');
+  assert.deepEqual(restored.categories,[]);
+});
+
+test('product attachments and service documents survive saving in the new representation',async()=>{
+  const db=await openStorage(crypto.randomUUID());
+  const product={id:crypto.randomUUID(),docs:[file()],history:[{id:crypto.randomUUID(),docs:[file()]}]};
+  await db.save(product);
+  const [saved]=await db.list();
+  assert.deepEqual(saved,product);
+  assert.equal(await saved.docs[0].blob.text(),'%PDF-test');
+  assert.equal(await saved.history[0].docs[0].blob.text(),'%PDF-test');
 });

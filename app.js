@@ -1,4 +1,5 @@
-import {categories,currencies,states,caseStates,documentKinds,maxFile,maxBackup,localDay,warrantyDate,warranty,selectProducts,portfolio,calendarFile,productValid,sniff,normalize,receiptCategories,receiptValid,receiptSummary,receiptProducts} from './model.js';
+import {categoryName,categoryKey,productCategories,currencies,states,caseStates,documentKinds,maxFile,maxBackup,localDay,warrantyDate,warranty,selectProducts,portfolio,calendarFile,productValid,sniff,normalize,receiptCategories,receiptValid,receiptSummary,receiptProducts} from './model.js';
+import {showPhoto} from './photo-viewer.js';
 import {openStorage,exportBackup,importArchive} from './storage.js';
 
 const $=id=>document.getElementById(id);
@@ -18,8 +19,8 @@ const readSetting=(key,fallback)=>{try{return localStorage.getItem(key)??fallbac
 const writeSetting=(key,value)=>{try{localStorage.setItem(key,value);}catch{notice('Nie udało się zapisać ustawienia na tym urządzeniu.');}};
 const activeProducts=()=>products.filter(p=>p.state==='W użyciu');
 const editor=$('editor'),editorBody=$('editorBody'),view=$('view');
-let storage,products=[],receipts=[],updateNotice,uploadImport=false,opener,selectedDay=localDay(),month=selectedDay.slice(0,7)+'-01';
-let query='',filter='all',sort='recent',theme=readSetting('domowy-theme','dark'),large=readSetting('domowy-large','false');
+let storage,products=[],receipts=[],customCategories=[],updateNotice,uploadImport=false,opener,selectedDay=localDay(),month=selectedDay.slice(0,7)+'-01';
+let query='',productCategory='',filter='all',sort='recent',theme=readSetting('domowy-theme','dark'),large=readSetting('domowy-large','false');
 let pending=false,disposePreview;
 const previews=new Set();
 const homeIcons={dashboard:'dashboard',products:'box',receipts:'archive',calendar:'calendar',settings:'settings'};
@@ -52,7 +53,7 @@ function setTheme(){
   document.querySelector('meta[name=theme-color]').content=theme==='light'?'#edf4f7':'#0d1727';
 }
 function navigate(to){if(location.hash==='#'+to)render();else location.hash=to;}
-function openList(option='all',nextQuery=''){filter=option;query=nextQuery;navigate('products');}
+function openList(option='all',nextQuery=''){filter=option;query=nextQuery;productCategory='';navigate('products');}
 function metric(title,num,glyph,option,cls=''){
   return append(button('',()=>openList(option),{cls:'metric '+cls}),icon(glyph),elem('strong',num),elem('small',title));
 }
@@ -107,24 +108,28 @@ function control(label,name,{value='',type='text',choices,required=false,maxLeng
   if(step!==undefined)input.step=step;
   return append(elem('label',undefined,'field'),elem('span',label),input);
 }
+const categoryOptions=()=>productCategories([...customCategories,...products.map(product=>product.category)]);
+const optionMap=names=>Object.fromEntries(names.map(name=>[name,name]));
 function productList(){
   view.append(append(elem('div',undefined,'section-head'),elem('h1','Produkty'),addButton()));
   const search=control('Szukaj','query',{value:query,type:'search'});
   search.lastChild.placeholder='Nazwa, marka, kategoria…';
   const choice=control('Filtr','filter',{value:filter,choices:filterLabels});
+  const category=control('Kategoria produktu','productCategory',{value:productCategory,choices:{'':'Wszystkie kategorie',...optionMap(categoryOptions())}});
   const order=control('Sortuj','sort',{value:sort,choices:sortLabels});
   const result=elem('div',undefined,'rows');
   const count=elem('p',undefined,'muted');
   count.setAttribute('aria-live','polite');
   function refreshList(){
-    const rows=selectProducts(products,{query,filter,sort});
+    const rows=selectProducts(products,{query,category:productCategory,filter,sort});
     count.textContent='Liczba produktów: '+rows.length;
     result.replaceChildren(...(rows.length?rows.map(p=>row(p)):[empty('box','Brak wyników','Zmień filtr lub dodaj produkt.')]));
   }
   search.lastChild.oninput=e=>{query=e.target.value;refreshList();};
   choice.lastChild.onchange=e=>{filter=e.target.value;refreshList();};
+  category.lastChild.onchange=e=>{productCategory=e.target.value;refreshList();};
   order.lastChild.onchange=e=>{sort=e.target.value;refreshList();};
-  view.append(append(elem('div',undefined,'filters'),search,choice,order),append(elem('section',undefined,'panel'),count,result));refreshList();
+  view.append(append(elem('div',undefined,'filters product-filters'),search,choice,category,order),append(elem('section',undefined,'panel'),count,result));refreshList();
 }
 function calendar(){
   const year=+month.slice(0,4),m=+month.slice(5,7)-1;
@@ -179,7 +184,7 @@ function settings(){
   const backup=panel('Kopia zapasowa');
   const exportBtn=button('Eksportuj kopię',async()=>{
     exportBtn.disabled=true;
-    try{const snapshot=await storage.snapshot();download(await exportBackup(snapshot.products,snapshot.receipts),'VOLTYRO-kopia-'+localDay()+'.json');notice('Kopia zapasowa została przygotowana. Zachowaj plik w prywatnym miejscu.');}
+    try{const snapshot=await storage.snapshot();download(await exportBackup(snapshot.products,snapshot.receipts,snapshot.categories),'VOLTYRO-kopia-'+localDay()+'.json');notice('Kopia zapasowa została przygotowana. Zachowaj plik w prywatnym miejscu.');}
     catch(e){notice(errorText(e));}finally{exportBtn.disabled=false;}
   },{cls:'primary'});
   const input=elem('input');input.type='file';input.accept='.json,application/json';input.hidden=true;
@@ -191,7 +196,7 @@ function settings(){
     try{
       const imported=await importArchive(file);
       if(await ask('Przywrócić kopię?','Poprawna kopia zawiera '+imported.products.length+' produktów i '+imported.receipts.length+' paragonów. Import zastąpi bieżące dane na tym urządzeniu.')){
-        await storage.replace(imported.products,imported.receipts);await refresh();notice('Przywrócono kopię zapasową.');
+        await storage.replace(imported.products,imported.receipts,imported.categories);productCategory='';await refresh();notice('Przywrócono kopię zapasową.');
       }
     }catch(e){notice(errorText(e));}finally{uploadImport=false;importBtn.disabled=false;}
   };
@@ -215,7 +220,7 @@ function render(){
   }));
   view.replaceChildren();({dashboard,products:productList,receipts:receiptList,calendar,settings})[page]();
 }
-async function refresh(){({products,receipts}=await storage.snapshot());render();}
+async function refresh(){({products,receipts,categories:customCategories}=await storage.snapshot());render();}
 function open(title,body){
   if(!editor.open){opener=document.activeElement;editor.showModal();}
   disposePreview?.();disposePreview=undefined;
@@ -306,11 +311,11 @@ function dialogForm(fields,attach,onSave,back){
 }
 const valueNumber=value=>value===''?null:Number(value);
 const clean=(value='')=>value.trim();
-async function saveProduct(product){
+async function saveProduct(product,customName){
   if(!productValid(product))throw Error('Sprawdź daty, kwoty i wymagane pola formularza.');
   const current=await storage.list();
   if(current.length>=1000&&!current.some(p=>p.id===product.id))throw Error('Osiągnięto limit 1000 produktów.');
-  await storage.save(product);await refresh();
+  await storage.save(product,customName);await refresh();
 }
 function productForm(previous){
   const p=previous??{};
@@ -324,8 +329,23 @@ function productForm(previous){
   calc();
   const name=field('Nazwa produktu','name',{required:true,maxLength:120});name.classList.add('wide');
   const notes=field('Notatki','notes',{type:'textarea',maxLength:5000});notes.classList.add('wide');
+  const options=categoryOptions();
+  const current=options.find(name=>categoryKey(name)===categoryKey(p.category??'Inne'));
+  const category=field('Kategoria','category',{choices:options,value:current??'Inne'});
+  const custom=control('Nazwa własnej kategorii','customCategory',{maxLength:60});
+  custom.id='custom-category-field';custom.hidden=true;custom.lastChild.disabled=true;
+  const addCategory=button('Dodaj własną kategorię',()=>{
+    custom.hidden=!custom.hidden;
+    custom.lastChild.disabled=custom.hidden;custom.lastChild.required=!custom.hidden;
+    addCategory.setAttribute('aria-expanded',String(!custom.hidden));
+    addCategory.textContent=custom.hidden?'Dodaj własną kategorię':'Anuluj własną kategorię';
+    if(!custom.hidden)custom.lastChild.focus();
+  });
+  addCategory.setAttribute('aria-expanded','false');
+  addCategory.setAttribute('aria-controls',custom.id);
+  const categoryGroup=append(elem('div',undefined,'category-group'),category,addCategory,custom);
   const fields=append(elem('div',undefined,'fields'),name,field('Producent','brand',{maxLength:250}),field('Model','model',{maxLength:250}),
-    field('Numer seryjny','serial',{maxLength:250}),field('Kategoria','category',{choices:categories,value:p.category??'Inne'}),
+    field('Numer seryjny','serial',{maxLength:250}),categoryGroup,
     purchase,field('Sklep','store',{maxLength:250}),field('Cena','price',{type:'number',min:0,max:1e9,step:.01}),
     field('Waluta','currency',{choices:currencies,value:p.currency??'PLN'}),months,until,
     append(elem('label',undefined,'check wide'),override,elem('span','Ustaw datę końca ręcznie')),
@@ -334,11 +354,15 @@ function productForm(previous){
   fields.append(linked);
   const attach=attachmentPicker(p.docs);
   const form=dialogForm(fields,attach,async(d,docs)=>{
+    const customName=d.customCategory?.trim().replace(/\s+/g,' ');
+    if(d.customCategory!==undefined&&!categoryName(customName))throw Error('Wpisz nazwę własnej kategorii.');
+    const existing=customName&&categoryOptions().find(name=>categoryKey(name)===categoryKey(customName));
+    if(customName&&!existing&&customCategories.length>=1000)throw Error('Osiągnięto limit własnych kategorii.');
     const record={id:p.id??crypto.randomUUID(),created:p.created??new Date().toISOString(),history:p.history??[],docs,
-      name:clean(d.name),brand:clean(d.brand),model:clean(d.model),serial:clean(d.serial),category:d.category,purchase:d.purchase,
+      name:clean(d.name),brand:clean(d.brand),model:clean(d.model),serial:clean(d.serial),category:existing||customName||d.category,purchase:d.purchase,
       store:clean(d.store),price:valueNumber(d.price),currency:d.currency,months:Number(d.months||0),until:d.manual?d.until:'',state:d.state,notes:clean(d.notes)};
     if(d.receiptId)record.receiptId=d.receiptId;
-    await saveProduct(record);editor.close();notice(previous?'Zapisano zmiany produktu.':'Dodano produkt.');
+    await saveProduct(record,customName&&!existing?customName:undefined);editor.close();notice(previous?'Zapisano zmiany produktu.':'Dodano produkt.');
   },()=>{if(!pending){if(previous)detail(previous.id);else editor.close();}});
   open(previous?'Edytuj produkt':'Dodaj produkt',form);
   name.lastChild.focus();
@@ -348,25 +372,19 @@ function documentRow(doc,goBack){
     actions(button('Otwórz dokument',()=>preview(doc,goBack)),button('Pobierz',()=>download(doc.blob,doc.name))));
 }
 function preview(doc,goBack){
+  if(doc.blob.type!=='application/pdf'){
+    showPhoto({url:URL.createObjectURL(doc.blob),title:doc.name,download:()=>download(doc.blob,doc.name)});
+    return;
+  }
   const body=elem('section');
   const go=button('Wróć do szczegółów',goBack,{cls:'link-button'});
   body.append(go);
   open(doc.name,body);
   const url=objectURL(doc.blob);
-  if(doc.blob.type==='application/pdf'){
-    const link=elem('a','Otwórz PDF w nowej karcie','button');link.href=url;link.target='_blank';link.rel='noopener noreferrer';
-    const target=elem('div');
-    body.append(target,actions(link,button('Pobierz PDF',()=>download(doc.blob,doc.name))));
-    disposePreview=renderPdf(doc.blob,target);
-  }else{
-    const photo=elem('img');photo.src=url;photo.alt=doc.name;
-    photo.onerror=()=>{body.append(elem('p','Ta przeglądarka nie wyświetla tego typu zdjęcia. Możesz pobrać oryginał.','notice'));};
-    let zoom=100;
-    const change=delta=>{zoom=Math.min(300,Math.max(100,zoom+delta));photo.style.width=zoom+'%';label.textContent=zoom+'%';};
-    const label=elem('span','100%');label.setAttribute('aria-live','polite');
-    body.append(actions(button('− Zmniejsz',()=>change(-25)),button('+ Powiększ',()=>change(25)),label,button('Pobierz',()=>download(doc.blob,doc.name))),
-      append(elem('div',undefined,'zoom'),photo));
-  }
+  const link=elem('a','Otwórz PDF w nowej karcie','button');link.href=url;link.target='_blank';link.rel='noopener noreferrer';
+  const target=elem('div');
+  body.append(target,actions(link,button('Pobierz PDF',()=>download(doc.blob,doc.name))));
+  disposePreview=renderPdf(doc.blob,target);
 }
 function renderPdf(blob,target){
   let closed=false,task,picture,generation=0,documentPdf;
@@ -459,7 +477,7 @@ function detail(id){
   if(linked)body.append(append(panel('Powiązany paragon'),button(linked.store+' · '+formatDate(linked.date),()=>receiptDetail(linked.id))));
   body.append(docs,history);open(p.name,body);
   const cover=p.docs.find(d=>d.kind===documentKinds[0]&&d.blob.type.startsWith('image/'));
-  if(cover){const img=elem('img',undefined,'details-photo');img.src=objectURL(cover.blob);img.alt='Zdjęcie urządzenia';img.onerror=()=>img.remove();body.insertBefore(img,overview);}
+  if(cover){const img=elem('img',undefined,'details-photo');img.src=objectURL(cover.blob);img.alt='Zdjęcie urządzenia';const coverButton=button('',()=>preview(cover,back),{cls:'photo-cover'});coverButton.setAttribute('aria-label','Otwórz zdjęcie produktu');img.onerror=()=>coverButton.remove();body.insertBefore(append(coverButton,img),overview);}
 }
 function historyForm(p,h){
   const previous=h??{};
@@ -641,7 +659,8 @@ async function prepareWorker(){
   const show=()=>{
     if(!registration.waiting||!worker.controller)return;
     updateNotice=()=>{worker.addEventListener('controllerchange',()=>location.reload(),{once:true});registration.waiting?.postMessage('activate');};
-    notice('Dostępna jest aktualizacja. Możesz ją zastosować w Ustawieniach po zapisaniu zmian.');
+    notice('Dostępna jest aktualizacja. Zapisz rozpoczętą edycję przed jej zastosowaniem.');
+    $('status').append(document.createTextNode(' '),button('Zaktualizuj aplikację',updateNotice));
   };
   show();registration.addEventListener('updatefound',()=>registration.installing?.addEventListener('statechange',show));
 }

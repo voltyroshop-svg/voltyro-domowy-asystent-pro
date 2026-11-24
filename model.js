@@ -1,4 +1,4 @@
-export const categories=['RTV','AGD','Telefony','Komputery','Elektronarzędzia','Meble','Sprzęt sportowy','Inne'];
+export const categories=['RTV','AGD','Telefony','Komputery','Elektronarzędzia','Meble','Sprzęt sportowy','Obuwie','Odzież','Biżuteria i zegarki','Kosmetyki i perfumy','Zabawki i artykuły dziecięce','Dom i ogród','Motoryzacja','Akcesoria dla zwierząt','Narzędzia ręczne','Akcesoria i galanteria','Inne'];
 export const currencies=['PLN','EUR','USD','GBP','CHF','CZK'];
 export const states=['W użyciu','Sprzedany','Wycofany'];
 export const caseStates=['Otwarta','W toku','Uznana','Odrzucona','Zakończona'];
@@ -34,10 +34,17 @@ export function warranty(product,today=localDay()) {
 export function normalize(value) {
   return String(value).toLocaleLowerCase('pl').normalize('NFD').replace(/\p{Diacritic}/gu,'').replaceAll('ł','l');
 }
-export function selectProducts(products,{query='',filter='all',sort='recent',today=localDay()}={}) {
+export const categoryName=value=>typeof value==='string'&&value.length<=60&&value.trim()===value&&
+  /[\p{L}\p{N}]/u.test(value)&&!/[\p{Cc}\p{Cf}]/u.test(value);
+export const categoryKey=value=>value.trim().replace(/\s+/g,' ').toLocaleLowerCase('pl').normalize('NFC');
+export function productCategories(custom=[]){
+  return [...new Map([...custom,...categories].filter(categoryName).map(name=>[categoryKey(name),name])).values()]
+    .sort((a,b)=>a.localeCompare(b,'pl'));
+}
+export function selectProducts(products,{query='',category='',filter='all',sort='recent',today=localDay()}={}) {
   return products.filter(p=>{
     const kind=warranty(p,today).kind;
-    return normalize([p.name,p.brand,p.model,p.category,p.serial,p.store].join(' ')).includes(normalize(query.trim()))&&
+    return (!category||categoryKey(p.category)===categoryKey(category))&&normalize([p.name,p.brand,p.model,p.category,p.serial,p.store].join(' ')).includes(normalize(query.trim()))&&
       (filter==='all'||filter==='archived'&&p.state!=='W użyciu'||
         p.state==='W użyciu'&&(filter===kind||filter==='valid'&&['active','soon'].includes(kind)));
   }).sort((a,b)=>{
@@ -82,7 +89,7 @@ const okDoc=d=>d&&id(d.id)&&text(d.name,255)&&documentKinds.includes(d.kind)&&d.
 export function productValid(p) {
   if(!p||!id(p.id)||!text(p.name,120)||!p.name.trim()||
     !['brand','model','serial','store'].every(k=>text(p[k]))||!text(p.notes,5000)||
-    !categories.includes(p.category)||!states.includes(p.state)||!currencies.includes(p.currency)||
+    !categoryName(p.category)||!states.includes(p.state)||!currencies.includes(p.currency)||
     !optionalDate(p.purchase)||!optionalDate(p.until)||p.until&&p.purchase&&p.until<p.purchase||
     !Number.isInteger(p.months)||p.months<0||p.months>600||!optionalMoney(p.price)||
     !text(p.created,30)||!Number.isFinite(Date.parse(p.created))||

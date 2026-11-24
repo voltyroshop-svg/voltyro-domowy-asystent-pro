@@ -47,3 +47,9 @@ test('rejects broken, incompatible and forged attachments before import',async()
   await assert.rejects(sniff(new Blob(['<svg>'])),/zdjęcie/);
   assert.deepEqual(await importBackup(copy([product()])),[product()]);
 });
+
+test('filter combines custom category with search and matches case variants',()=>{
+  const a=product({category:'Pamiątki rodzinne'}),b=product({category:'Obuwie'});
+  assert.equal(productValid(a),true);
+  assert.deepEqual(selectProducts([a,b],{category:'pamiątki rodzinne',query:'lodz'}),[a]);
+});

@@ -19,12 +19,13 @@ async function photoCanvas(blob){
     const image=new Image();
     image.src=url;
     await image.decode();
-    const scale=Math.min(1,2600/Math.max(image.naturalWidth,image.naturalHeight),Math.sqrt(3_000_000/(image.naturalWidth*image.naturalHeight)));
+    const scale=Math.min(1,3200/Math.max(image.naturalWidth,image.naturalHeight),Math.sqrt(3_000_000/(image.naturalWidth*image.naturalHeight)));
     if(!Number.isFinite(scale)||scale<=0)throw Error('Nie można otworzyć zdjęcia.');
     const canvas=surface(Math.max(2,Math.round(image.naturalWidth*scale)),Math.max(2,Math.round(image.naturalHeight*scale)));
     const ctx=canvas.getContext('2d');
     ctx.fillStyle='#fff';ctx.fillRect(0,0,canvas.width,canvas.height);
     ctx.drawImage(image,0,0,canvas.width,canvas.height);
+    canvas.sourceSize={width:image.naturalWidth,height:image.naturalHeight};
     return canvas;
   }finally{URL.revokeObjectURL(url);}
 }
@@ -105,7 +106,7 @@ export function rectify(canvas,points=full){
   const p=points.map(({x,y})=>({x:x*(w-1),y:y*(h-1)}));
   const width=Math.max(2,Math.round(Math.max(distance(p[0],p[1]),distance(p[3],p[2]))));
   const height=Math.max(2,Math.round(Math.max(distance(p[0],p[3]),distance(p[1],p[2]))));
-  const scale=Math.min(1,2200/Math.max(width,height),Math.sqrt(2_400_000/(width*height)));
+  const scale=Math.min(1,2800/Math.max(width,height),Math.sqrt(2_400_000/(width*height)));
   const result=surface(Math.max(2,Math.round(width*scale)),Math.max(2,Math.round(height*scale))),ctx=result.getContext('2d');
   const input=canvas.getContext('2d').getImageData(0,0,w,h).data;
   const pixels=ctx.createImageData(result.width,result.height),map=projectCorners(p);
@@ -157,4 +158,13 @@ export function rotateReceipt(canvas){
   const target=surface(canvas.height,canvas.width),ctx=target.getContext('2d');
   ctx.translate(target.width,0);ctx.rotate(Math.PI/2);ctx.drawImage(canvas,0,0);
   return target;
+}
+
+export function receiptTotalRegion(canvas){
+  const y=Math.round(canvas.height*.42);
+  const height=canvas.height-y;
+  const zoom=Math.min(1.8,1600/canvas.width,2200/height,Math.sqrt(2_400_000/(canvas.width*height)));
+  const result=surface(Math.max(2,Math.round(canvas.width*zoom)),Math.max(2,Math.round(height*zoom)));
+  result.getContext('2d').drawImage(canvas,0,y,canvas.width,height,0,0,result.width,result.height);
+  return result;
 }

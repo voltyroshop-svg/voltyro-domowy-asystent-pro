@@ -24,7 +24,7 @@ export function chooseReceiptCrop(original){
     status.textContent='Prostowanie zdjęcia…';
     requestAnimationFrame(()=>setTimeout(()=>{
       if(!dialog.open)return;
-      try{output=rectify(canvas,points);dialog.close();}
+      try{output=rectify(canvas,points);output.sourceSize=original.sourceSize;dialog.close();}
       catch(error){status.textContent=error.message;scan.disabled=false;}
     },0));
   });scan.className='primary';

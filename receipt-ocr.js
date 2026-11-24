@@ -1,5 +1,5 @@
 import {dateValid,normalize} from './model.js';
-import {loadReceiptPhoto,detectReceipt,rectify,enhanceReceipt,imageBlob,rotateReceipt} from './receipt-image.js';
+import {loadReceiptPhoto,detectReceipt,rectify,enhanceReceipt,imageBlob,rotateReceipt,receiptTotalRegion} from './receipt-image.js';
 
 const amountPattern='(?:\\d{1,3}(?: \\d{3})+|\\d+)[,.]\\d{2}';
 const amount=value=>Number(value.replaceAll(' ','').replace(',','.'));
@@ -21,14 +21,15 @@ function plausibleName(value){
   const words=value.match(/[\p{L}]{2,}/gu)??[];
   return words.join('').length>=3&&words.some(word=>/[aąeęioóuy]/i.test(word));
 }
-const cleanLine=text=>text.trim().replace(/\s+/g,' ');
+const cleanLine=text=>text.trim().replace(/\s+/g,' ')
+  .replace(/\b(PLN)(?=\d)/gi,'$1 ').replace(/(\d), (\d{2})(?!\d)/g,'$1,$2');
 const sanitizedSeller=store=>/^[kn]ip\b|[<>={}|]|niskie ceny/i.test(normalize(store))?'':store;
 
-export function parseReceipt(text,{lines:recognized,confidence}={}) {
+export function parseReceipt(text,{lines:recognized,confidence,partial=false}={}) {
   const lines=(recognized?.length?recognized:text.split(/\r?\n/).map(text=>({text})))
     .map(line=>({...line,text:cleanLine(line.text)})).filter(line=>line.text);
   const strong=(line,min)=>line?.confidence===undefined||line.confidence>=min;
-  const dates=new Set(),nips=new Set(),totals=new Set(),payments=new Set(),methods=new Set(),items=[];
+  const dates=new Set(),nips=new Set(),totals=new Set(),strongTotals=new Set(),totalLabels=new Map(),payments=new Set(),methods=new Set(),items=[];
   let fiscal=lines.findIndex(line=>strong(line,48)&&fiscalPattern.test(normalize(line.text)));
   const fiscalPrinted=fiscal>=0;
   if(!fiscalPrinted)fiscal=lines.findIndex(line=>strong(line,49)&&/\bparagon\s+f\S{4,}/.test(normalize(line.text)));
@@ -67,7 +68,15 @@ export function parseReceipt(text,{lines:recognized,confidence}={}) {
       itemSection=false;
       const next=lines[i+1];
       const value=found?.[2]??(strong(next,67)?next?.text.match(moneyAlone)?.[1]:undefined);
-      if(value&&strong(record,65))totals.add(amount(value));
+      if(value&&strong(record,65)){
+        totals.add(amount(value));
+        if(strong(record,87)&&(found||strong(next,87))&&/^(?:suma\W+pln|do zaplaty|razem\W+pln)\b/.test(prefix)){
+          const numeric=amount(value);
+          strongTotals.add(numeric);
+          if(!totalLabels.has(numeric))totalLabels.set(numeric,new Set());
+          totalLabels.get(numeric).add(prefix.match(/^(?:do zaplaty|suma|razem)/)[0]);
+        }
+      }
       continue;
     }
     if(terminal.test(prefix)||/^sp\.\s*op\./.test(prefix)){itemSection=false;continue;}
@@ -92,8 +101,44 @@ export function parseReceipt(text,{lines:recognized,confidence}={}) {
   const payment=methods.size>1?'mixed':[...methods][0]??'';
   const good=confidence===undefined||confidence>=49&&(fiscalPrinted||fiscalHeader&&Boolean(nip||payment)||taxLayout&&Boolean(nip||payment)&&Boolean(date)&&total!==null)&&((date&&total!==null)||(nip&&(date||total!==null))||
     (items.length>=2&&(date||total!==null))||(total!==null&&payment&&items.length>0));
-  return {store:good?sanitizedSeller(store):'',date:good?date:'',nip:good?nip:'',total:good?total:null,payment:good?payment:'',
-    items:good?items:[],quality:good?'review':'retake'};
+  const structure=fiscalPrinted||taxLayout;
+  // Keep independent, receipt-specific evidence even when the entire page is noisy.
+  const corroboratedTotal=total!==null&&(totalLabels.get(total)?.size>=2||payments.has(total));
+  const partialTotal=partial&&corroboratedTotal&&strongTotals.has(total)&&(structure||payments.has(total));
+  const partialNip=partial&&structure&&Boolean(nip);
+  return {store:good?sanitizedSeller(store):'',date:good?date:'',nip:good||partialNip?nip:'',
+    total:good||partialTotal?total:null,payment:good?payment:'',items:good?items:[],
+    quality:good?'review':partialTotal||partialNip?'partial':'retake',
+    ...(partial?{evidence:{structure,total:totals.size===1?[...totals][0]:null,
+      moneyConflict:total===null&&totals.size>0,corroboratedTotal,anchoredTotal:strongTotals.size===1?[...strongTotals][0]:null}}:{})};
+}
+
+const receiptFields=['store','date','nip','total','payment'];
+export function reconcileReceiptReads(reads){
+  const rank=result=>(result.quality==='review'?1000:result.quality==='partial'?100:0)+
+    (result.total!==null?12:0)+(result.date?8:0)+(result.nip?8:0)+Math.min(10,result.items.length)+result.confidence/10;
+  const ordered=[...reads].sort((a,b)=>rank(b)-rank(a));
+  const result={...ordered[0]};
+  for(const key of receiptFields){
+    const empty=key==='total'?null:'';
+    const candidates=ordered.filter(read=>read[key]!==empty&&read[key]!==undefined);
+    const values=new Set(candidates.map(read=>normalize(read[key])));
+    result[key]=values.size===1?candidates[0][key]:empty;
+    if(key==='date'&&candidates.length===1&&candidates[0].confidence<67)result.date='';
+  }
+  if(result.total!==null&&ordered.some(read=>read.evidence?.structure&&
+    (read.evidence.moneyConflict||read.evidence.total!==null&&read.evidence.total!==result.total)))result.total=null;
+  if(result.total===null){
+    // A repeated OCR mistake is possible. Require a separate label or payment
+    // as corroboration in addition to agreement between image passes.
+    const amounts=ordered.map(read=>read.evidence?.anchoredTotal??null).filter(value=>value!==null);
+    if(amounts.length>=2&&new Set(amounts).size===1&&ordered.some(read=>read.evidence?.structure&&read.evidence.corroboratedTotal)&&
+      !ordered.some(read=>read.evidence?.moneyConflict||read.evidence?.total!=null&&read.evidence.total!==amounts[0]))
+      result.total=amounts[0];
+  }
+  const fields=receiptFields.filter(field=>result[field]!==null&&result[field]!=='');
+  result.quality=fields.length||result.items.length?(result.quality==='review'?'review':'partial'):'retake';
+  return result;
 }
 
 const asset=path=>new URL('ocr/'+path,import.meta.url).href;
@@ -110,7 +155,7 @@ async function loadLibrary(){
   return library;
 }
 
-export async function scanReceipt(image,onProgress,signal,{prepared=false}={}){
+async function scanWithTesseract(image,onProgress,signal,{prepared=false}={}){
   signal.throwIfAborted();
   let timeout,worker,finished=false,failEngine;
   const engineFailed=new Promise((_,reject)=>{failEngine=reject;});
@@ -127,43 +172,70 @@ export async function scanReceipt(image,onProgress,signal,{prepared=false}={}){
     });
     if(finished){await worker.terminate();return;}
     const canvas=prepared?image:await loadReceiptPhoto(image);
-    const cropped=prepared?canvas:rectify(canvas,detectReceipt(canvas)??undefined);
+    const corners=prepared?null:detectReceipt(canvas);
+    const cropped=corners?rectify(canvas,corners):canvas;
+    const reads=[];
+    const started=performance.now();
+    const finish=()=>({...reconcileReceiptReads(reads),diagnostics:{
+      source:canvas.sourceSize??{width:canvas.width,height:canvas.height},
+      processed:{width:cropped.width,height:cropped.height},autoCrop:Boolean(corners),manualCrop:prepared,
+      engine:'Tesseract',passes:reads.length,elapsedMs:Math.round(performance.now()-started)
+    }});
     const read=async(input,psm)=>{
       signal.throwIfAborted();
       await worker.setParameters({tessedit_pageseg_mode:psm,preserve_interword_spaces:'1',user_defined_dpi:'300'});
       const {data}=await worker.recognize(await imageBlob(input),{}, {text:true,blocks:true});
       const lines=data.blocks?.flatMap(block=>block.paragraphs.flatMap(paragraph=>paragraph.lines));
-      return {...parseReceipt(data.text,{lines,confidence:data.confidence}),raw:data.text,confidence:data.confidence};
+      return {...parseReceipt(data.text,{lines,confidence:data.confidence,partial:true}),raw:data.text,confidence:data.confidence};
     };
-    const first=await read(enhanceReceipt(cropped),'6');
-    if(first.quality==='review'&&first.total!==null&&first.date&&first.confidence>=72)return first;
-    const second=await read(cropped,'4');
-    if(first.quality!=='review'&&second.quality!=='review'){
-      const highContrast=await read(enhanceReceipt(cropped,{binary:true}),'6');
-      if(highContrast.quality==='review')return highContrast;
+    reads.push(await read(enhanceReceipt(cropped),'6'));
+    if(reads[0].quality==='review'&&reads[0].total!==null&&reads[0].date&&reads[0].confidence>=80)return finish();
+    reads.push(await read(corners?canvas:cropped,'4'));
+    if(finish().total===null)reads.push(await read(enhanceReceipt(receiptTotalRegion(cropped)),'11'));
+    if(finish().quality==='retake')reads.push(await read(enhanceReceipt(cropped,{binary:true}),'6'));
+    if(!prepared&&finish().quality==='retake'&&cropped.width>cropped.height*1.15){
+      const turned=rotateReceipt(cropped);
+      reads.push(await read(enhanceReceipt(turned),'6'));
+      if(finish().quality==='retake')reads.push(await read(enhanceReceipt(rotateReceipt(rotateReceipt(turned))),'6'));
     }
-    if(!prepared&&first.quality!=='review'&&second.quality!=='review'&&cropped.width>cropped.height*1.15){
-      const rotated=rotateReceipt(cropped);
-      const turn=await read(enhanceReceipt(rotated),'6');
-      if(turn.quality==='review')return turn;
-      const inverse=await read(enhanceReceipt(rotateReceipt(rotateReceipt(rotated))),'6');
-      if(inverse.quality==='review')return inverse;
-    }
-    const score=result=>(result.quality==='review'?1000:0)+(result.total!==null?12:0)+(result.date?8:0)+(result.nip?8:0)+
-      Math.min(10,result.items.length)+result.confidence/10;
-    const preferred=score(second)>score(first)?second:first;
-    const other=preferred===first?second:first;
-    if(other.quality==='review'&&preferred.quality==='review'){
-      for(const key of ['store','nip','date','payment','total']){
-        if(preferred[key]&&other[key]&&normalize(preferred[key])!==normalize(other[key]))preferred[key]=key==='total'?null:'';
-      }
-    }
-    if(preferred.confidence<67&&preferred.date&&other.date!==preferred.date)preferred.date='';
-    return preferred;
+    return finish();
   }
   try{return await Promise.race([recognize(),engineFailed]);}
   finally{
     finished=true;clearTimeout(timeout);signal.removeEventListener('abort',cancel);
     if(worker)await worker.terminate();
+  }
+}
+
+
+export async function scanReceipt(image,onProgress,signal,options={}){
+  let primary;
+  onProgress({status:'loading local model'});
+  try{
+    const {readWithPaddle}=await import('./receipt-paddle.js');
+    const photo=await readWithPaddle(image,signal,options);
+    const raw=photo.lines.map(line=>line.text).join('\n');
+    primary={...parseReceipt(raw,{lines:photo.lines,confidence:photo.confidence,partial:true}),
+      raw,confidence:photo.confidence,diagnostics:photo.diagnostics};
+    if(primary.quality!=='retake'&&primary.total!==null)return primary;
+  }catch{
+    signal.throwIfAborted();
+  }
+  onProgress({status:'fallback'});
+  try{
+    const fallback=await scanWithTesseract(image,onProgress,signal,options);
+    // An incomplete reading from the more accurate engine can still contribute
+    // validated fields, while the fallback fills only unambiguous gaps.
+    if(!primary)return fallback;
+    const result=reconcileReceiptReads([primary,fallback]);
+    return {...result,diagnostics:{
+      ...fallback.diagnostics,engine:'PaddleOCR + Tesseract',
+      passes:primary.diagnostics.passes+fallback.diagnostics.passes,
+      elapsedMs:primary.diagnostics.elapsedMs+fallback.diagnostics.elapsedMs
+    }};
+  }catch(error){
+    signal.throwIfAborted();
+    if(primary&&primary.quality!=='retake')return primary;
+    throw error;
   }
 }

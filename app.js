@@ -593,6 +593,9 @@ function receiptForm(previous,scanFirst=false){
   const raw=elem('details');raw.hidden=true;
   const rawText=elem('p',undefined,'ocr-text');
   raw.append(elem('summary','Tekst odczytany ze zdjęcia'),rawText);
+  const diagnostic=elem('details');diagnostic.hidden=true;
+  const diagnosticText=elem('p',undefined,'muted');
+  diagnostic.append(elem('summary','Parametry odczytu'),diagnosticText);
   const scanStatus=elem('p',undefined,'muted');scanStatus.setAttribute('role','status');
   async function startScan(manual=false){
     scan.disabled=crop.disabled=true;
@@ -610,11 +613,17 @@ function receiptForm(previous,scanFirst=false){
         if(!input){scanStatus.textContent='Kadrowanie anulowane.';return;}
       }
       const result=await scanReceipt(input,progress=>{
+        if(progress.status==='loading local model')scanStatus.textContent='Odczyt lokalnym modelem… Pierwsze uruchomienie może potrwać dłużej.';
+        if(progress.status==='fallback')scanStatus.textContent='Sprawdzanie zdjęcia drugim silnikiem…';
         if(progress.status==='recognizing text')scanStatus.textContent='Skanowanie… '+Math.round(progress.progress*100)+'%';
       },controller.signal,{prepared:manual});
       if(controller.signal.aborted)return;
       raw.open=false;raw.hidden=!result.raw.trim();rawText.textContent=result.raw;
-      if(result.quality!=='review'){
+      const {source,processed,autoCrop,manualCrop,engine,passes,elapsedMs}=result.diagnostics;
+      diagnostic.hidden=false;
+      diagnosticText.textContent=['Zdjęcie '+source.width+' × '+source.height+' px','Odczyt '+processed.width+' × '+processed.height+' px',
+        manualCrop?'Kadr ręczny':autoCrop?'Kadr automatyczny':'Całe zdjęcie',engine,passes+' przebiegów',Math.round(elapsedMs/1000)+' s'].join(' · ');
+      if(result.quality==='retake'){
         review.hidden=true;
         scanStatus.textContent='Zrób zdjęcie ponownie. Ułóż paragon płasko, doświetl go równomiernie i obejmij cały wydruk. Możesz też wykadrować zdjęcie lub wpisać dane ręcznie.';
         return;
@@ -635,7 +644,8 @@ function receiptForm(previous,scanFirst=false){
       review.hidden=false;
       for(const field of [store,date,total,nip,payment])field.lastChild.setAttribute('aria-describedby',review.id);
       review.textContent='Sprawdź sklep, datę, kwotę, walutę i wszystkie pozycje. Pola bez wiarygodnego odczytu pozostawiono puste.';
-      scanStatus.textContent='Sprawdź propozycje w formularzu przed zapisaniem.';
+      scanStatus.textContent=result.quality==='partial'?'Odczyt częściowy. Sprawdź uzupełnione pola i w razie potrzeby wykadruj lub zrób nowe zdjęcie.':
+        'Sprawdź propozycje w formularzu przed zapisaniem.';
     }catch(error){
       if(!controller.signal.aborted)scanStatus.textContent=errorText(error)+' Możesz uzupełnić dane ręcznie.';
     }finally{scan.disabled=crop.disabled=false;}
@@ -667,7 +677,7 @@ function receiptForm(previous,scanFirst=false){
   }
   r.items.forEach(addItem);
   positionPanel.append(results,actions(button('Dodaj pozycję',()=>addItem())));
-  const scanning=append(panel('Skanuj paragon'),elem('p','Zdjęcie zostaje na urządzeniu. Odczytane dane możesz poprawić przed zapisaniem.','muted'),actions(scan,crop),scanStatus,review,raw);
+  const scanning=append(panel('Skanuj paragon'),elem('p','Zdjęcie zostaje na urządzeniu. Odczytane dane możesz poprawić przed zapisaniem.','muted'),actions(scan,crop),scanStatus,review,raw,diagnostic);
   const body=scanFirst?append(elem('div'),attachment.wrap,scanning,fields,positionPanel):append(elem('div'),fields,attachment.wrap,scanning,positionPanel);
   const form=dialogForm(body,{wrap:elem('span'),list:attachment.list},async(data,docs)=>{
     if(!scan.disabled){

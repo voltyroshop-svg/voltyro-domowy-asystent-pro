@@ -126,3 +126,28 @@ test('recognizes checked NIP, payment and editable item details on a structured 
   assert.equal(validNip('5261009951'),false);
   assert.equal(parseReceipt(raw,{confidence:86,lines:raw.split('\n').map(text=>({text,confidence:10}))}).quality,'retake');
 });
+
+test('a confirmed 300 PLN total survives a damaged header and missing date',()=>{
+  const raw='PARAGON FISKALNY\nSUMA PLN300, 00\nDO ZAPŁATY 300,00';
+  const lines=raw.split('\n').map(text=>({text,confidence:95}));
+  const result=parseReceipt(raw,{lines,confidence:43,partial:true});
+  assert.equal(result.quality,'partial');
+  assert.equal(result.total,300);
+  assert.equal(result.store,'');
+  assert.equal(result.date,'');
+});
+
+test('does not copy a lone amount from a noisy OCR read, even if repeated across image passes',async()=>{
+  const {reconcileReceiptReads}=await import('../receipt-ocr.js');
+  const raw='PARAGON FISKALNY\nSUMA PLN 156,00';
+  const result=parseReceipt(raw,{confidence:57,partial:true});
+  assert.equal(reconcileReceiptReads([{...result,confidence:57},{...result,confidence:60}]).total,null);
+});
+
+test('posted rival amounts from two layouts suppress the amount without erasing the verified NIP',async()=>{
+  const {reconcileReceiptReads}=await import('../receipt-ocr.js');
+  const parse=total=>({...parseReceipt('NIP 526-10-09-959\nPARAGON FISKALNY\nSUMA PLN '+total+'\n2026-11-23',{confidence:89,partial:true}),confidence:89});
+  const result=reconcileReceiptReads([parse('300,00'),parse('308,00')]);
+  assert.equal(result.total,null);
+  assert.equal(result.nip,'5261009959');
+});

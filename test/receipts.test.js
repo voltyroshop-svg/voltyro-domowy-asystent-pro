@@ -3,7 +3,7 @@ import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {openStorage,exportBackup,importArchive} from '../storage.js';
 import {receiptSummary,receiptProducts} from '../model.js';
-import {parseReceipt} from '../receipt-ocr.js';
+import {parseReceipt,validNip} from '../receipt-ocr.js';
 
 const file=()=>({id:crypto.randomUUID(),name:'Document.pdf',kind:'Paragon lub faktura',
   blob:new Blob(['%PDF-test'],{type:'application/pdf'})});
@@ -54,8 +54,8 @@ test('reports monthly receipt totals once and separates currencies',()=>{
 
 test('Polish receipt parsing leaves ambiguous values empty and ignores tax lines',()=>{
   const sample='Sklep Żółć\nPARAGON FISKALNY\nChleb 2SZT x 4,00 8,00 B\nMasło 5,99 B\nSprzed. opod. PTU A 13,99\nKwota PTU A 0,40\nSUMA: PLN 13,99\nDO ZAPŁATY: 13,99\n23.11.2026';
-  assert.deepEqual(parseReceipt(sample),{store:'Sklep Żółć',date:'2026-11-23',total:13.99,items:[
-    {name:'Chleb',price:8},{name:'Masło',price:5.99}]});
+  assert.deepEqual(parseReceipt(sample),{store:'Sklep Żółć',date:'2026-11-23',total:13.99,nip:'',payment:'',quality:'review',items:[
+    {name:'Chleb',price:8,quantity:2,unitPrice:4},{name:'Masło',price:5.99}]});
   assert.equal(parseReceipt(sample+'\nRAZEM 15,99').total,null);
 });
 
@@ -107,4 +107,22 @@ test('product attachments and service documents survive saving in the new repres
   assert.deepEqual(saved,product);
   assert.equal(await saved.docs[0].blob.text(),'%PDF-test');
   assert.equal(await saved.history[0].docs[0].blob.text(),'%PDF-test');
+});
+
+
+test('keeps unreliable reads empty even when the OCR engine returned text',()=>{
+  const raw='IiiGza ZZ!!!\n5140 BVY\nALE 278 1.00';
+  assert.deepEqual(parseReceipt(raw,{confidence:80}),{store:'',date:'',nip:'',total:null,payment:'',items:[],quality:'retake'});
+  const fiscal='Sklep Żółć\nPARAGON FISKALNY\nSUMA PLN 18,00\n2026-11-23';
+  assert.equal(parseReceipt(fiscal,{confidence:24}).quality,'retake');
+});
+
+test('recognizes checked NIP, payment and editable item details on a structured receipt',()=>{
+  const raw='Sklep Łąka\nNIP 526-10-09-959\nPARAGON FISKALNY\nŻarówka\n2 szt x 4,00 8,00 A\nDO ZAPŁATY 8,00\nForma płatności: karta\n2026-11-23';
+  const result=parseReceipt(raw,{confidence:86});
+  assert.equal(result.nip,'5261009959');
+  assert.equal(result.payment,'card');
+  assert.deepEqual(result.items,[{name:'Żarówka',price:8,quantity:2,unitPrice:4}]);
+  assert.equal(validNip('5261009951'),false);
+  assert.equal(parseReceipt(raw,{confidence:86,lines:raw.split('\n').map(text=>({text,confidence:10}))}).quality,'retake');
 });

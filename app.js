@@ -1,3 +1,6 @@
+import {paymentOptions,scanReceipt} from './receipt-ocr.js';
+import {chooseReceiptCrop} from './receipt-crop.js';
+import {loadReceiptPhoto} from './receipt-image.js';
 import {categoryName,categoryKey,productCategories,currencies,states,caseStates,documentKinds,maxFile,maxBackup,localDay,warrantyDate,warranty,selectProducts,portfolio,calendarFile,productValid,sniff,normalize,receiptCategories,receiptValid,receiptSummary,receiptProducts} from './model.js';
 import {showPhoto} from './photo-viewer.js';
 import {openStorage,exportBackup,importArchive} from './storage.js';
@@ -256,7 +259,7 @@ async function compress(blob,kind){
     return compressed?.size<blob.size?compressed:blob;
   }catch {return blob;}finally{URL.revokeObjectURL(url);}
 }
-function attachmentPicker(initial=[],service=false){
+function attachmentPicker(initial=[],service=false,preserveOriginal=false){
   let docs=[...initial],additions=Promise.resolve();
   const wrap=elem('div',undefined,'wide stack');
   const kind=control('Rodzaj dokumentu','docKind',{choices:service?['Dokument serwisowy']:documentKinds.slice(0,3)});
@@ -274,20 +277,26 @@ function attachmentPicker(initial=[],service=false){
       elem('p',doc.kind,'muted'),actions(button('Usuń plik',()=>{docs=docs.filter(x=>x.id!==doc.id);renderFiles();},{cls:'danger'})))));
   }
   const addFiles=event=>{
-    const files=[...event.target.files],picked=kind.lastChild.value;event.target.value='';
+    const input=event.target,files=[...input.files],picked=kind.lastChild.value;
+    input.disabled=true;
     additions=additions.then(async()=>{
       try{
         if(docs.length+files.length>100)throw Error('Limit to 100 plików w jednym zestawie.');
         const fresh=[];
         for(const file of files){
           if(file.size===0||file.size>maxFile)throw Error('Każdy plik musi mieć od 1 bajtu do 20 MB.');
-          const format=await sniff(file);
-          const blob=await compress(new Blob([file],{type:format}),format);
+          let bytes;
+          try {bytes=await file.arrayBuffer();}
+          catch {throw Error('Nie można odczytać pliku. Wybierz lokalną kopię z galerii lub zrób nowe zdjęcie.');}
+          const format=await sniff(new Blob([bytes]));
+          const original=new Blob([bytes],{type:format});
+          const blob=preserveOriginal?original:await compress(original,format);
           fresh.push({id:crypto.randomUUID(),name:file.name.slice(0,255),kind:picked,blob});
         }
         docs.push(...fresh);renderFiles();
         status.textContent=files.length?'Dodano pliki do formularza.':'';
       }catch(e){status.textContent=errorText(e);}
+      finally{input.value='';input.disabled=false;}
     });
   };
   choose.lastChild.onchange=camera.lastChild.onchange=addFiles;
@@ -547,6 +556,8 @@ function receiptDetail(id){
   const back=()=>receiptDetail(id);
   const body=elem('div',undefined,'stack');
   body.append(elem('p',[formatDate(r.date),r.category,price(r.total,r.currency)].join(' · ')));
+  if(r.nip)body.append(elem('p','NIP: '+r.nip));
+  if(r.payment)body.append(elem('p','Płatność: '+paymentOptions[r.payment]));
   if(r.notes)body.append(elem('p',r.notes,'notice'));
   body.append(actions(button('Edytuj paragon',()=>receiptForm(r),{cls:'primary'}),button('Usuń paragon',async()=>{
     if(!await ask('Usunąć paragon?','Powiązane produkty pozostaną zapisane. Dokument i pozycje znikną z archiwum.'))return;
@@ -554,7 +565,7 @@ function receiptDetail(id){
     catch(error){notice(errorText(error));}
   },{cls:'danger'})));
   if(r.docs.length)body.append(append(panel('Zdjęcia i dokumenty'),...r.docs.map(doc=>documentRow(doc,back))));
-  if(r.items.length)body.append(append(panel('Pozycje zakupowe'),...r.items.map(item=>elem('p',item.name+' · '+price(item.price,r.currency)))));
+  if(r.items.length)body.append(append(panel('Pozycje zakupowe'),...r.items.map(item=>elem('p',[item.name,item.quantity!=null?item.quantity+' × '+price(item.unitPrice??null,r.currency):'',price(item.price,r.currency)].filter(Boolean).join(' · ')))));
   const linked=products.filter(p=>p.receiptId===id);
   if(linked.length)body.append(append(panel('Powiązane produkty'),...linked.map(p=>rowToProduct(p))));
   open(r.store,body);
@@ -566,11 +577,14 @@ function receiptForm(previous,scanFirst=false){
   const store=control('Sklep','store',{value:r.store,required:true,maxLength:250});
   const date=control('Data zakupu','date',{value:r.date,type:'date'});
   const total=control('Kwota całkowita','total',{value:r.total,type:'number',min:0,max:1e9,step:.01});
-  const fields=append(elem('div',undefined,'fields'),store,date,total,
+  const nip=control('NIP sprzedawcy','nip',{value:r.nip,maxLength:16});
+  nip.lastChild.inputMode='numeric';
+  const payment=control('Forma płatności','payment',{choices:paymentOptions,value:r.payment??''});
+  const fields=append(elem('div',undefined,'fields'),store,date,total,nip,payment,
     control('Waluta','currency',{choices:currencies,value:r.currency}),
     control('Kategoria zakupów','category',{choices:receiptCategories,value:r.category}),
     control('Notatki','notes',{type:'textarea',value:r.notes,maxLength:5000}));
-  const attachment=attachmentPicker(r.docs);
+  const attachment=attachmentPicker(r.docs,false,true);
   attachment.wrap.querySelector('[name=docKind]').value='Paragon lub faktura';
   attachment.wrap.querySelector('[name=docKind]').closest('label').hidden=true;
   const positionPanel=panel('Pozycje zakupowe');
@@ -580,19 +594,33 @@ function receiptForm(previous,scanFirst=false){
   const rawText=elem('p',undefined,'ocr-text');
   raw.append(elem('summary','Tekst odczytany ze zdjęcia'),rawText);
   const scanStatus=elem('p',undefined,'muted');scanStatus.setAttribute('role','status');
-  const scan=button('Odczytaj dane ze zdjęcia',async()=>{
-    scan.disabled=true;
+  async function startScan(manual=false){
+    scan.disabled=crop.disabled=true;
     const controller=new AbortController();
     disposePreview=()=>controller.abort();
     try{
       const photo=(await attachment.list()).findLast(doc=>doc.blob.type.startsWith('image/'));
       if(!photo)throw Error('Najpierw zrób zdjęcie lub wybierz je z galerii.');
       scanStatus.textContent='Skanowanie paragonu na urządzeniu…';
-      const {scanReceipt}=await import('./receipt-ocr.js');
-      const result=await scanReceipt(photo.blob,progress=>{
+      let input=photo.blob;
+      if(manual){
+        const canvas=await loadReceiptPhoto(photo.blob);
+        if(controller.signal.aborted)return;
+        input=await chooseReceiptCrop(canvas);
+        if(!input){scanStatus.textContent='Kadrowanie anulowane.';return;}
+      }
+      const result=await scanReceipt(input,progress=>{
         if(progress.status==='recognizing text')scanStatus.textContent='Skanowanie… '+Math.round(progress.progress*100)+'%';
-      },controller.signal);
+      },controller.signal,{prepared:manual});
       if(controller.signal.aborted)return;
+      raw.open=false;raw.hidden=!result.raw.trim();rawText.textContent=result.raw;
+      if(result.quality!=='review'){
+        review.hidden=true;
+        scanStatus.textContent='Zrób zdjęcie ponownie. Ułóż paragon płasko, doświetl go równomiernie i obejmij cały wydruk. Możesz też wykadrować zdjęcie lub wpisać dane ręcznie.';
+        return;
+      }
+      if(!nip.lastChild.value&&result.nip)nip.lastChild.value=result.nip;
+      if(!payment.lastChild.value&&result.payment)payment.lastChild.value=result.payment;
       if(!store.lastChild.value&&result.store)store.lastChild.value=result.store.slice(0,250);
       if(!date.lastChild.value)date.lastChild.value=result.date;
       if(!total.lastChild.value&&result.total!==null)total.lastChild.value=result.total;
@@ -605,41 +633,46 @@ function receiptForm(previous,scanFirst=false){
         else if(results.childElementCount<200)addItem(item);
       }
       review.hidden=false;
-      for(const field of [store,date,total])field.lastChild.setAttribute('aria-describedby',review.id);
+      for(const field of [store,date,total,nip,payment])field.lastChild.setAttribute('aria-describedby',review.id);
       review.textContent='Sprawdź sklep, datę, kwotę, walutę i wszystkie pozycje. Pola bez wiarygodnego odczytu pozostawiono puste.';
-      raw.hidden=!result.raw.trim();rawText.textContent=result.raw;
-      scanStatus.textContent=result.raw.trim()?'Odczyt zakończony. Sprawdź dane w formularzu.':'Nie odczytano tekstu. Wpisz dane ręcznie, zdjęcie można zachować.';
+      scanStatus.textContent='Sprawdź propozycje w formularzu przed zapisaniem.';
     }catch(error){
       if(!controller.signal.aborted)scanStatus.textContent=errorText(error)+' Możesz uzupełnić dane ręcznie.';
-    }finally{scan.disabled=false;}
-  });
+    }finally{scan.disabled=crop.disabled=false;}
+  }
+  const scan=button('Odczytaj dane ze zdjęcia',()=>startScan());
+  const crop=button('Wykadruj lub obróć',()=>startScan(true));
   function readItems(){
     return [...results.children].map(line=>({
       id:line.dataset.itemId,
       name:line.querySelector('[name=itemName]').value.trim(),
-      price:valueNumber(line.querySelector('[name=itemPrice]').value)
+      price:valueNumber(line.querySelector('[name=itemPrice]').value),
+      quantity:valueNumber(line.querySelector('[name=itemQuantity]').value),
+      unitPrice:valueNumber(line.querySelector('[name=itemUnitPrice]').value)
     }));
   }
   function addItem(item={}){
     if(results.childElementCount>=200)return;
     const name=control('Nazwa pozycji','itemName',{value:item.name,required:true,maxLength:120});
     const cost=control('Cena pozycji','itemPrice',{value:item.price,type:'number',min:0,max:1e9,step:.01});
+    const quantity=control('Ilość','itemQuantity',{value:item.quantity,type:'number',min:.001,max:1e6,step:.001});
+    const unit=control('Cena jednostkowa','itemUnitPrice',{value:item.unitPrice,type:'number',min:0,max:1e9,step:.01});
     const select=elem('input');select.type='checkbox';select.name='createProduct';
     const linked=item.id&&products.some(p=>p.id===item.id);
     select.disabled=Boolean(linked);
-    const line=append(elem('div',undefined,'fields docs'),name,cost,
+    const line=append(elem('div',undefined,'fields docs'),name,cost,quantity,unit,
       append(elem('label',undefined,'check'),select,elem('span',linked?'Produkt już zapisany':'Dodaj jako produkt')),
       button('Usuń pozycję',()=>line.remove()));
     line.dataset.itemId=item.id??crypto.randomUUID();results.append(line);
   }
   r.items.forEach(addItem);
   positionPanel.append(results,actions(button('Dodaj pozycję',()=>addItem())));
-  const scanning=append(panel('Skanuj paragon'),elem('p','Zdjęcie zostaje na urządzeniu. Odczytane dane możesz poprawić przed zapisaniem.','muted'),actions(scan),scanStatus,review,raw);
+  const scanning=append(panel('Skanuj paragon'),elem('p','Zdjęcie zostaje na urządzeniu. Odczytane dane możesz poprawić przed zapisaniem.','muted'),actions(scan,crop),scanStatus,review,raw);
   const body=scanFirst?append(elem('div'),attachment.wrap,scanning,fields,positionPanel):append(elem('div'),fields,attachment.wrap,scanning,positionPanel);
   const form=dialogForm(body,{wrap:elem('span'),list:attachment.list},async(data,docs)=>{
     if(!scan.disabled){
       const saved={...r,store:data.store.trim(),date:data.date,total:valueNumber(data.total),currency:data.currency,
-        category:data.category,notes:data.notes.trim(),docs,items:readItems()};
+        category:data.category,nip:data.nip.replace(/[\s-]/g,''),payment:data.payment,notes:data.notes.trim(),docs,items:readItems()};
       if(!receiptValid(saved))throw Error('Sprawdź nazwę sklepu, datę, kwotę i pozycje.');
       if(!previous&&receipts.length>=5000)throw Error('Osiągnięto limit 5000 paragonów.');
       const selected=new Set([...results.children].filter(line=>line.querySelector('[name=createProduct]').checked).map(line=>line.dataset.itemId));

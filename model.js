@@ -113,13 +113,16 @@ export async function sniff(blob) {
 }
 
 export const receiptCategories=['Spożywcze','Odzież','Kosmetyki','Elektronika','Dom i ogród','Usługi','Inne'];
+export const receiptPayments=['','card','cash','blik','transfer','voucher','mixed'];
 export function receiptValid(r) {
   return Boolean(r && id(r.id) && text(r.store) && r.store.trim() &&
     optionalDate(r.date) && optionalMoney(r.total) && currencies.includes(r.currency) &&
+    (r.nip===undefined||r.nip===''||typeof r.nip==='string'&&/^\d{10}$/.test(r.nip))&&(r.payment===undefined||receiptPayments.includes(r.payment))&&
     receiptCategories.includes(r.category) && text(r.notes,5000) &&
     Array.isArray(r.docs) && r.docs.length<=100 && r.docs.every(okDoc) && allUnique(r.docs) &&
     Array.isArray(r.items) && r.items.length<=200 && r.items.every(item=>
-      item && id(item.id) && text(item.name,120) && item.name.trim() && optionalMoney(item.price)) && allUnique(r.items));
+      item && id(item.id) && text(item.name,120) && item.name.trim() && optionalMoney(item.price) && (item.unitPrice===undefined||optionalMoney(item.unitPrice)) &&
+      (item.quantity===undefined||item.quantity===null||Number.isFinite(item.quantity)&&item.quantity>0&&item.quantity<=1e6)) && allUnique(r.items));
 }
 
 export function receiptSummary(receipts, month) {

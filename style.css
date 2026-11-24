@@ -44,3 +44,12 @@ dialog.photo-viewer{position:fixed;inset:0;width:100%;height:100%;height:100dvh;
 .photo-message{padding:16px}
 @media(max-width:690px){.product-filters{grid-template-columns:repeat(2,minmax(0,1fr))}}
 @media(max-width:375px){.fields:has(input[type=date]){grid-template-columns:minmax(0,1fr)}}
+
+dialog.receipt-crop{max-width:740px}
+.receipt-crop .crop-stage{position:relative;width:max-content;max-width:100%;line-height:0;margin:20px auto;padding:0}
+.crop-stage canvas{max-width:min(100%,600px);max-height:52dvh;width:auto;height:auto;display:block}
+.crop-stage svg{position:absolute;inset:0;width:100%;height:100%;pointer-events:none}
+.crop-stage polygon{fill:#007b6a20;stroke:#25e5c2;stroke-width:.6}
+.crop-stage .crop-handle{position:absolute;transform:translate(-50%,-50%);padding:0;min-width:38px;min-height:38px;justify-content:center;
+  background:#092732;color:#fff;border:2px solid #25e5c2;border-radius:50%;touch-action:none}
+.receipt-crop .actions{gap:6px}

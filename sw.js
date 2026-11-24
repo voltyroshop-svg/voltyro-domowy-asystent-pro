@@ -1,5 +1,5 @@
 const prefix='voltyro-domowy-shell-';
-const version=prefix+'5';
+const version=prefix+'6';
 const files=['./','./index.html','./style.css','./app.js','./storage.js','./model.js','./photo-viewer.js','./receipt-ocr.js','./receipt-image.js','./receipt-crop.js','./receipt-paddle.js','./receipt-paddle-worker.js','./ocr/tesseract.min.js','./ocr/worker.min.js','./ocr/tesseract-core-lstm.wasm.js','./ocr/pol.traineddata.gz','./manifest.webmanifest','./icon.svg',
   './pdf/pdf.min.js', './pdf/pdf.worker.min.js',
   './pdf/fonts/FoxitDingbats.pfb',
@@ -24,6 +24,9 @@ const resources=new Set(files.map(path=>new URL(path,self.registration.scope).hr
 self.addEventListener('install',event=>event.waitUntil((async()=>{
   const cache=await caches.open(version);
   await cache.addAll(files.map(path=>new Request(path,{cache:'reload'})));
+  // Older installed shells only offer manual activation. Promote this release
+  // after the whole shell is cached so the next launch uses the new OCR.
+  await self.skipWaiting();
 })()));
 self.addEventListener('message',event=>{if(event.data==='activate')event.waitUntil(self.skipWaiting());});
 self.addEventListener('activate',event=>event.waitUntil((async()=>{

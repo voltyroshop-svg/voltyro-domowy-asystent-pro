@@ -3,7 +3,8 @@ import {chooseReceiptCrop} from './receipt-crop.js';
 import {loadReceiptPhoto} from './receipt-image.js';
 import {categoryName,categoryKey,productCategories,currencies,states,caseStates,documentKinds,maxFile,maxBackup,localDay,warrantyDate,warranty,selectProducts,portfolio,calendarFile,productValid,sniff,normalize,receiptCategories,receiptValid,receiptSummary,receiptProducts} from './model.js';
 import {showPhoto} from './photo-viewer.js';
-import {openStorage,exportBackup,importArchive} from './storage.js';
+import {openStorage} from './storage.js';
+import {prepareBackup,restoreBackup,documentCount} from './backup.js';
 
 const $=id=>document.getElementById(id);
 const elem=(name,text,cls)=>{const node=document.createElement(name);if(text!==undefined)node.textContent=text;if(cls)node.className=cls;return node;};
@@ -29,7 +30,11 @@ const previews=new Set();
 const homeIcons={dashboard:'dashboard',products:'box',receipts:'archive',calendar:'calendar',settings:'settings'};
 
 function notice(text=''){const status=$('status');status.hidden=!text;status.textContent=text;}
-function errorText(e){return e?.name==='QuotaExceededError'?'Brak miejsca na urządzeniu. Usuń zbędne pliki lub zwolnij pamięć.':e?.message||'Operacja nie powiodła się.';}
+function errorText(e){
+  if(e?.name==='QuotaExceededError')return 'Brak miejsca na zapis. Zwolnij miejsce w ustawieniach telefonu, nie usuwając danych VOLTYRO, i spróbuj ponownie. '+(e.cause?'Bieżące dane pozostały bez zmian.':'');
+  if(['VersionError','InvalidStateError'].includes(e?.name))return 'Otwórz najnowszą wersję aplikacji. Zamknij pozostałe karty VOLTYRO i odśwież tę stronę.';
+  return e?.message||'Operacja nie powiodła się.';
+}
 function button(label,fn,{cls='',glyph}={}){
   const b=elem('button',undefined,cls||undefined);b.type='button';
   if(glyph)b.append(icon(glyph));
@@ -185,26 +190,71 @@ function settings(){
   },{glyph:'sun'});
   appearance.append(checkbox,themed);
   const backup=panel('Kopia zapasowa');
+  const last=elem('p',undefined,'muted');
+  function exportState(){
+    const stamp=readSetting('domowy-last-backup','');
+    last.textContent=stamp?'Ostatni potwierdzony eksport · '+new Date(stamp).toLocaleString('pl-PL'):
+      'Brak potwierdzonego eksportu na tym urządzeniu.';
+  }
+  exportState();
+  const downloads=elem('div',undefined,'stack');
   const exportBtn=button('Eksportuj kopię',async()=>{
-    exportBtn.disabled=true;
-    try{const snapshot=await storage.snapshot();download(await exportBackup(snapshot.products,snapshot.receipts,snapshot.categories),'VOLTYRO-kopia-'+localDay()+'.json');notice('Kopia zapasowa została przygotowana. Zachowaj plik w prywatnym miejscu.');}
-    catch(e){notice(errorText(e));}finally{exportBtn.disabled=false;}
+    exportBtn.disabled=true;downloads.replaceChildren();notice('Przygotowywanie i sprawdzanie części kopii…');
+    try{
+      const files=await prepareBackup(await storage.snapshot());
+      const progress=elem('p');
+      const confirm=button('Potwierdź zapis wszystkich plików',()=>{
+        const at=new Date().toISOString();
+        writeSetting('domowy-last-backup',at);exportState();
+        if(readSetting('domowy-last-backup','')===at)notice('Zapis eksportu potwierdzony.');
+      });
+      confirm.disabled=true;
+      const clicked=new Set();
+      const update=()=>{
+        progress.textContent='Wybrano do pobrania '+clicked.size+' z '+files.length+' plików.';
+        confirm.disabled=clicked.size!==files.length;
+      };
+      downloads.append(elem('p','Pobierz manifest i wszystkie części. Sprawdź, czy są w Plikach lub Pobranych, i zachowaj je razem.'),progress);
+      files.forEach(({blob,name},index)=>downloads.append(button(index===0?'Pobierz manifest':'Pobierz część '+index,()=>{
+        download(blob,name);clicked.add(index);update();
+      })));
+      downloads.append(confirm);update();notice('Kopia jest gotowa do pobrania.');
+    }catch(error){notice(errorText(error));}finally{exportBtn.disabled=false;}
   },{cls:'primary'});
-  const input=elem('input');input.type='file';input.accept='.json,application/json';input.hidden=true;
+  const input=elem('input');input.type='file';input.accept='.json,.vpart,application/json,application/octet-stream';input.multiple=true;input.hidden=true;
   const importBtn=button('Importuj kopię',()=>input.click());
   input.onchange=async()=>{
-    const file=input.files[0];input.value='';
-    if(!file||uploadImport)return;
-    uploadImport=true;importBtn.disabled=true;
+    const files=[...input.files];input.value='';
+    if(!files.length||uploadImport)return;
+    uploadImport=true;importBtn.disabled=true;notice('Sprawdzanie spójności kopii…');
     try{
-      const imported=await importArchive(file);
-      if(await ask('Przywrócić kopię?','Poprawna kopia zawiera '+imported.products.length+' produktów i '+imported.receipts.length+' paragonów. Import zastąpi bieżące dane na tym urządzeniu.')){
-        await storage.replace(imported.products,imported.receipts,imported.categories);productCategory='';await refresh();notice('Przywrócono kopię zapasową.');
+      const imported=await restoreBackup(files);
+      notice();
+      const count=imported.products.length+' produktów, '+imported.receipts.length+' paragonów i '+documentCount(imported)+' dokumentów.';
+      if(await ask('Przywrócić kopię?','Sprawdzona kopia zawiera '+count+' Import zastąpi dane lokalne po zapisaniu punktu odzyskiwania.')){
+        await storage.replace(imported.products,imported.receipts,imported.categories);
+        productCategory='';await refresh();notice('Przywrócono kopię. Poprzednie dane są w punkcie odzyskiwania.');
       }
-    }catch(e){notice(errorText(e));}finally{uploadImport=false;importBtn.disabled=false;}
+    }catch(error){notice(errorText(error));}finally{uploadImport=false;importBtn.disabled=false;}
   };
-  backup.append(elem('p','Kopia zawiera produkty, paragony, pozycje zakupowe, dokumenty i historię spraw. Maksymalny rozmiar kopii to 160 MB.','muted'),
-    actions(exportBtn,importBtn,input),elem('p','Uwaga: usunięcie danych przeglądarki lub aplikacji może spowodować utratę lokalnych dokumentów. Zapisuj kopię poza aplikacją.','notice'));
+  const recovery=elem('div',undefined,'stack');
+  storage.recovery().then(entries=>{
+    entries.sort((a,b)=>b.at.localeCompare(a.at));
+    if(!entries.length)recovery.append(elem('p','Brak lokalnych punktów odzyskiwania.','muted'));
+    for(const entry of entries){
+      const label=entry.kind==='snapshot'?'Dane sprzed zastąpienia kopią':entry.label||'Usunięty rekord';
+      recovery.append(append(elem('div',undefined,'stack'),elem('p',label+' · '+new Date(entry.at).toLocaleString('pl-PL')),
+        button('Odzyskaj',async()=>{
+          const prompt=entry.kind==='snapshot'?'Bieżący zestaw zostanie zachowany jako kolejny punkt odzyskiwania.':'Rekord zostanie dodany wraz z dokumentami.';
+          if(!await ask('Odzyskać dane?',prompt))return;
+          try{await storage.recover(entry.key);await refresh();notice('Odzyskano dane.');}
+          catch(error){notice(errorText(error));}
+        })));
+    }
+  }).catch(error=>recovery.append(elem('p',errorText(error),'notice')));
+  backup.append(last,elem('p','Zapisz wszystkie pliki jednego eksportu w tym samym folderze. Przy imporcie zaznacz je razem. Starsze kopie JSON wybierz jako jeden plik.','muted'),
+    actions(exportBtn,importBtn,input),downloads,elem('h3','Odzyskiwanie lokalne'),recovery,
+    elem('p','Usunięcie danych aplikacji może usunąć również punkty odzyskiwania. Zachowaj osobną kopię poza VOLTYRO.','notice'));
   const install=panel('Instalacja i terminy');
   install.append(elem('p','iPhone: otwórz w Safari i wybierz Udostępnij → Dodaj do ekranu początkowego.'),
     elem('p','Android: otwórz w Chrome i wybierz w menu Zainstaluj aplikację lub Dodaj do ekranu głównego.'),
@@ -367,7 +417,7 @@ function productForm(previous){
     if(d.customCategory!==undefined&&!categoryName(customName))throw Error('Wpisz nazwę własnej kategorii.');
     const existing=customName&&categoryOptions().find(name=>categoryKey(name)===categoryKey(customName));
     if(customName&&!existing&&customCategories.length>=1000)throw Error('Osiągnięto limit własnych kategorii.');
-    const record={id:p.id??crypto.randomUUID(),created:p.created??new Date().toISOString(),history:p.history??[],docs,
+    const record={id:p.id??crypto.randomUUID(),revision:p.revision,created:p.created??new Date().toISOString(),history:p.history??[],docs,
       name:clean(d.name),brand:clean(d.brand),model:clean(d.model),serial:clean(d.serial),category:existing||customName||d.category,purchase:d.purchase,
       store:clean(d.store),price:valueNumber(d.price),currency:d.currency,months:Number(d.months||0),until:d.manual?d.until:'',state:d.state,notes:clean(d.notes)};
     if(d.receiptId)record.receiptId=d.receiptId;
@@ -461,7 +511,7 @@ function detail(id){
   if(w.until)controls.append(button('Dodaj termin do kalendarza (ICS)',()=>download(new Blob([calendarFile(p)],{type:'text/calendar;charset=utf-8'}),'gwarancja-'+w.until+'.ics')));
   controls.append(button('Usuń produkt',async()=>{
     if(!await ask('Usunąć ten produkt?',p.name+' i jego dokumenty oraz historia zostaną usunięte z tego urządzenia.'))return;
-    try{await storage.remove(p.id);await refresh();editor.close();notice('Usunięto produkt.');}
+    try{await storage.remove(p.id,p.revision);await refresh();editor.close();notice('Przeniesiono produkt do odzyskiwania w Ustawieniach.');}
     catch(e){notice(errorText(e));}
   },{cls:'danger'}));
   body.append(controls);
@@ -476,7 +526,7 @@ function detail(id){
     for(const doc of entry.docs)item.append(documentRow(doc,back));
     item.append(actions(button('Edytuj wpis',()=>historyForm(p,entry)),button('Usuń wpis',async()=>{
       if(!await ask('Usunąć wpis?',entry.kind+' i jej dokumenty zostaną usunięte.'))return;
-      try{await saveProduct({...p,history:p.history.filter(h=>h.id!==entry.id)});back();notice('Usunięto wpis.');}
+      try{await storage.removeCase(p.id,entry.id,p.revision);await refresh();back();notice('Przeniesiono wpis do odzyskiwania w Ustawieniach.');}
       catch(e){notice(errorText(e));}
     },{cls:'danger'})));
     history.append(item);
@@ -561,7 +611,7 @@ function receiptDetail(id){
   if(r.notes)body.append(elem('p',r.notes,'notice'));
   body.append(actions(button('Edytuj paragon',()=>receiptForm(r),{cls:'primary'}),button('Usuń paragon',async()=>{
     if(!await ask('Usunąć paragon?','Powiązane produkty pozostaną zapisane. Dokument i pozycje znikną z archiwum.'))return;
-    try{await storage.removeReceipt(r.id);await refresh();editor.close();notice('Usunięto paragon.');}
+    try{await storage.removeReceipt(r.id,r.revision);await refresh();editor.close();notice('Przeniesiono paragon do odzyskiwania w Ustawieniach.');}
     catch(error){notice(errorText(error));}
   },{cls:'danger'})));
   if(r.docs.length)body.append(append(panel('Zdjęcia i dokumenty'),...r.docs.map(doc=>documentRow(doc,back))));

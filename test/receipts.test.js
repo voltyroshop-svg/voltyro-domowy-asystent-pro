@@ -20,7 +20,7 @@ test('upgrades the version 1 database without replacing old IDs, files or repair
     request.onsuccess=()=>{request.result.close();resolve();};
   });
   const db=await openStorage(name);
-  assert.deepEqual(await db.list(),[old]);
+  assert.deepEqual(await db.list(),[{...old,revision:'legacy'}]);
   assert.equal(await (await db.list())[0].history[0].docs[0].blob.text(),'%PDF-test');
   assert.deepEqual(await db.receipts(),[]);
 });
@@ -33,8 +33,8 @@ test('saves receipts on their own, adds only selected products once and unlinks 
   assert.deepEqual(await db.list(),[]);
   const selected=receiptProducts(r,new Set(items.slice(0,2).map(i=>i.id)));
   assert.ok(selected.every(p=>p.months===0&&p.receiptId===r.id));
-  await db.saveReceipt(r,selected);
-  await db.saveReceipt(r,selected);
+  await db.saveReceipt(r,selected,(await db.receipts())[0].revision);
+  await db.saveReceipt(r,selected,(await db.receipts())[0].revision);
   assert.equal((await db.list()).length,2);
   const backup=await exportBackup(await db.list(),await db.receipts());
   const restored=await importArchive(backup);
@@ -104,7 +104,9 @@ test('product attachments and service documents survive saving in the new repres
   const product={id:crypto.randomUUID(),docs:[file()],history:[{id:crypto.randomUUID(),docs:[file()]}]};
   await db.save(product);
   const [saved]=await db.list();
-  assert.deepEqual(saved,product);
+  const {revision,...stored}=saved;
+  assert.ok(revision);
+  assert.deepEqual(stored,product);
   assert.equal(await saved.docs[0].blob.text(),'%PDF-test');
   assert.equal(await saved.history[0].docs[0].blob.text(),'%PDF-test');
 });

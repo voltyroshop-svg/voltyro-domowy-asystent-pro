@@ -1,6 +1,6 @@
 # VOLTYRO Domowy Asystent PRO
 
-Polskojęzyczna aplikacja PWA do zapisywania sprzętu domowego, dokumentów, gwarancji, napraw i reklamacji. Dane i pliki pozostają w IndexedDB urządzenia. Pełna kopia JSON pozwala przenieść je na inne urządzenie. Import zastępuje bieżącą zawartość po sprawdzeniu pliku i potwierdzeniu. Kopia może zawierać poufne dane i powinna pozostać prywatna.
+Polskojęzyczna aplikacja PWA do zapisywania sprzętu domowego, dokumentów, gwarancji, napraw i reklamacji. Dane i pliki pozostają w IndexedDB urządzenia. Pełna kopia składa się z manifestu JSON i binarnych części, które można przenieść na inne urządzenie. Import zastępuje bieżącą zawartość po sprawdzeniu kompletu, potwierdzeniu i zapisaniu punktu odzyskiwania. Kopia może zawierać poufne dane i powinna pozostać prywatna.
 
 ## Uruchomienie i testy
 

@@ -1,6 +1,6 @@
 const prefix='voltyro-domowy-shell-';
-const version=prefix+'6';
-const files=['./','./index.html','./style.css','./app.js','./storage.js','./model.js','./photo-viewer.js','./receipt-ocr.js','./receipt-image.js','./receipt-crop.js','./receipt-paddle.js','./receipt-paddle-worker.js','./ocr/tesseract.min.js','./ocr/worker.min.js','./ocr/tesseract-core-lstm.wasm.js','./ocr/pol.traineddata.gz','./manifest.webmanifest','./icon.svg',
+const version=prefix+'7';
+const files=['./','./index.html','./style.css','./app.js','./storage.js','./backup.js','./model.js','./photo-viewer.js','./receipt-ocr.js','./receipt-image.js','./receipt-crop.js','./receipt-paddle.js','./receipt-paddle-worker.js','./ocr/tesseract.min.js','./ocr/worker.min.js','./ocr/tesseract-core-lstm.wasm.js','./ocr/pol.traineddata.gz','./manifest.webmanifest','./icon.svg',
   './pdf/pdf.min.js', './pdf/pdf.worker.min.js',
   './pdf/fonts/FoxitDingbats.pfb',
   './pdf/fonts/FoxitFixed.pfb',

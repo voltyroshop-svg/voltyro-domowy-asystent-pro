@@ -140,3 +140,38 @@ test('recovers a deleted receipt with its documents and links, a case, and an ea
   assert.equal(documentCount(await db.snapshot()),7);
   db.close();
 });
+
+test('migrates v4 overview without attachments and maintains summaries with every record change',async()=>{
+  const name=crypto.randomUUID(),data=example([document()]);
+  const old=await new Promise(resolve=>{
+    const req=indexedDB.open(name,4);
+    req.onupgradeneeded=()=>{
+      req.result.createObjectStore('products',{keyPath:'id'}).add(data.products[0]);
+      req.result.createObjectStore('receipts',{keyPath:'id'}).add(data.receipts[0]);
+    };
+    req.onsuccess=()=>resolve(req.result);
+  });
+  old.close();
+  const db=await openStorage(name);
+  const [p]=await db.list(),[r]=await db.receipts();
+  const first=await db.overview();
+  assert.equal(first.products[0].id,p.id);
+  assert.equal(first.products[0].docs,undefined);
+  assert.equal(first.products[0].history,undefined);
+  assert.deepEqual(first.receipts[0].items,[{name:'Buty'}]);
+  assert.equal(first.receipts[0].docs,undefined);
+  assert.equal(await (await db.receipt(r.id)).docs[0].blob.text(),'%PDF-0');
+  await db.save({...p,name:'Nowszy'});
+  assert.equal((await db.overview()).products[0].name,'Nowszy');
+  await db.removeReceipt(r.id,r.revision);
+  const removed=await db.overview();
+  assert.equal(removed.receipts.length,0);
+  assert.equal(removed.products[0].receiptId,undefined);
+  await db.recover((await db.recovery()).find(entry=>entry.kind==='receipt').key);
+  assert.equal((await db.overview()).products[0].receiptId,r.id);
+  await db.replace([],[],[]);
+  assert.deepEqual(await db.overview(),{products:[],receipts:[],categories:[]});
+  await db.recover('before-import');
+  assert.equal((await db.overview()).products[0].name,'Nowszy');
+  db.close();
+});

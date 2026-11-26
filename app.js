@@ -1,7 +1,8 @@
+import {warmTool} from './offline-tools.js';
 import {paymentOptions,scanReceipt} from './receipt-ocr.js';
 import {chooseReceiptCrop} from './receipt-crop.js';
 import {loadReceiptPhoto} from './receipt-image.js';
-import {categoryName,categoryKey,productCategories,currencies,states,caseStates,documentKinds,maxFile,maxBackup,localDay,warrantyDate,warranty,selectProducts,portfolio,calendarFile,productValid,sniff,normalize,receiptCategories,receiptValid,receiptSummary,receiptProducts} from './model.js';
+import {categoryName,categoryKey,productCategories,currencies,states,caseStates,documentKinds,maxFile,localDay,warrantyDate,warranty,selectProducts,portfolio,calendarFile,productValid,sniff,normalize,receiptCategories,receiptValid,receiptSummary,receiptProducts} from './model.js';
 import {showPhoto} from './photo-viewer.js';
 import {openStorage} from './storage.js';
 import {prepareBackup,restoreBackup,documentCount} from './backup.js';
@@ -78,12 +79,22 @@ function row(p,label){
 function shortcutSearch(){
   const input=elem('input');input.type='search';input.placeholder='Nazwa, marka lub kategoria';input.setAttribute('aria-label','Szukaj produktów');
   const form=append(elem('form',undefined,'actions dashboard-search'),input);
-  const submit=button('Szukaj');submit.type='submit';form.append(submit);
-  form.onsubmit=e=>{e.preventDefault();openList('all',input.value);};return form;
+  const submit=button('Szukaj');submit.type='submit';
+  const receiptsOnly=button('Szukaj w paragonach');receiptsOnly.type='submit';
+  form.append(submit,receiptsOnly);
+  form.onsubmit=event=>{
+    event.preventDefault();
+    if(event.submitter===receiptsOnly){
+      receiptSearch=input.value;receiptFilter='';
+      if(location.hash==='#receipts')render();else location.hash='receipts';
+    }else openList('all',input.value);
+  };
+  return form;
 }
 function dashboard(){
   const hero=elem('section',undefined,'hero');
-  hero.append(append(elem('div',undefined,'hero-content'),elem('h1','Domowy asystent'),elem('p','Sprzęty, dokumenty i gwarancje w jednym miejscu.'),actions(addButton())),heroArt());
+  hero.append(append(elem('div',undefined,'hero-content'),elem('h1','Domowy asystent'),elem('p','Sprzęty, dokumenty i gwarancje w jednym miejscu.'),actions(button('Skanuj paragon',()=>receiptForm(undefined,true),{cls:'primary',glyph:'archive'}),
+    button('Dodaj paragon ręcznie',()=>receiptForm()),button('Dodaj produkt',()=>productForm()))),heroArt());
   const active=activeProducts();
   const count=kind=>active.filter(p=>warranty(p).kind===kind).length;
   const metrics=append(elem('div',undefined,'metrics'),metric('Zapisane urządzenia',products.length,'box','all'),
@@ -273,7 +284,7 @@ function render(){
   }));
   view.replaceChildren();({dashboard,products:productList,receipts:receiptList,calendar,settings})[page]();
 }
-async function refresh(){({products,receipts,categories:customCategories}=await storage.snapshot());render();}
+async function refresh(){({products,receipts,categories:customCategories}=await storage.overview());render();}
 function open(title,body){
   if(!editor.open){opener=document.activeElement;editor.showModal();}
   disposePreview?.();disposePreview=undefined;
@@ -295,6 +306,11 @@ editor.addEventListener('focusin',event=>{
 });
 editor.addEventListener('close',()=>{disposePreview?.();disposePreview=undefined;for(const url of previews)URL.revokeObjectURL(url);previews.clear();if(opener?.isConnected)opener.focus();});
 $('closeEditor').onclick=()=>{if(!pending)editor.close();};
+window.addEventListener('beforeunload',event=>{
+  if(editor.open&&editorBody.querySelector('form[data-dirty]')){
+    event.preventDefault();event.returnValue='';
+  }
+});
 editor.addEventListener('cancel',event=>{if(pending)event.preventDefault();});
 function objectURL(blob){const url=URL.createObjectURL(blob);previews.add(url);return url;}
 async function compress(blob,kind){
@@ -324,7 +340,7 @@ function attachmentPicker(initial=[],service=false,preserveOriginal=false){
   const listing=elem('div');
   function renderFiles(){
     listing.replaceChildren(...docs.map(doc=>append(elem('div',undefined,'docs'),elem('strong',doc.name),
-      elem('p',doc.kind,'muted'),actions(button('Usuń plik',()=>{docs=docs.filter(x=>x.id!==doc.id);renderFiles();},{cls:'danger'})))));
+      elem('p',doc.kind,'muted'),actions(button('Usuń plik',()=>{docs=docs.filter(x=>x.id!==doc.id);wrap.dispatchEvent(new Event('change',{bubbles:true}));renderFiles();},{cls:'danger'})))));
   }
   const addFiles=event=>{
     const input=event.target,files=[...input.files],picked=kind.lastChild.value;
@@ -358,6 +374,9 @@ function dialogForm(fields,attach,onSave,back){
   const message=elem('p',undefined,'error');message.hidden=true;message.setAttribute('role','alert');
   const save=button('Zapisz',null,{cls:'primary'});save.type='submit';
   form.append(fields,attach.wrap,message,actions(save,button('Anuluj',back)));
+  form.addEventListener('input',()=>{form.dataset.dirty='';});
+  form.addEventListener('change',()=>{form.dataset.dirty='';});
+  form.addEventListener('invalid',event=>{const details=event.target.closest('details');if(details)details.open=true;},true);
   form.onsubmit=async event=>{
     event.preventDefault();
     if(pending)return;
@@ -372,8 +391,7 @@ const valueNumber=value=>value===''?null:Number(value);
 const clean=(value='')=>value.trim();
 async function saveProduct(product,customName){
   if(!productValid(product))throw Error('Sprawdź daty, kwoty i wymagane pola formularza.');
-  const current=await storage.list();
-  if(current.length>=1000&&!current.some(p=>p.id===product.id))throw Error('Osiągnięto limit 1000 produktów.');
+  if(products.length>=1000&&!products.some(p=>p.id===product.id))throw Error('Osiągnięto limit 1000 produktów.');
   await storage.save(product,customName);await refresh();
 }
 function productForm(previous){
@@ -403,14 +421,13 @@ function productForm(previous){
   addCategory.setAttribute('aria-expanded','false');
   addCategory.setAttribute('aria-controls',custom.id);
   const categoryGroup=append(elem('div',undefined,'category-group'),category,addCategory,custom);
-  const fields=append(elem('div',undefined,'fields'),name,field('Producent','brand',{maxLength:250}),field('Model','model',{maxLength:250}),
-    field('Numer seryjny','serial',{maxLength:250}),categoryGroup,
-    purchase,field('Sklep','store',{maxLength:250}),field('Cena','price',{type:'number',min:0,max:1e9,step:.01}),
-    field('Waluta','currency',{choices:currencies,value:p.currency??'PLN'}),months,until,
-    append(elem('label',undefined,'check wide'),override,elem('span','Ustaw datę końca ręcznie')),
-    field('Status produktu','state',{choices:states,value:p.state??states[0]}),notes);
-  const linked=receiptChoice(p.receiptId??'');
-  fields.append(linked);
+  const optional=append(elem('details',undefined,'optional-fields'),elem('summary','Więcej szczegółów'),
+    append(elem('div',undefined,'fields'),field('Producent','brand',{maxLength:250}),field('Model','model',{maxLength:250}),
+      field('Numer seryjny','serial',{maxLength:250}),field('Sklep','store',{maxLength:250}),
+      field('Cena','price',{type:'number',min:0,max:1e9,step:.01}),field('Waluta','currency',{choices:currencies,value:p.currency??'PLN'}),
+      until,append(elem('label',undefined,'check wide'),override,elem('span','Ustaw datę końca ręcznie')),
+      field('Status produktu','state',{choices:states,value:p.state??states[0]}),notes,receiptChoice(p.receiptId??'')));
+  const fields=append(elem('div',undefined,'stack'),append(elem('div',undefined,'fields'),name,categoryGroup,purchase,months),optional);
   const attach=attachmentPicker(p.docs);
   const form=dialogForm(fields,attach,async(d,docs)=>{
     const customName=d.customCategory?.trim().replace(/\s+/g,' ');
@@ -447,6 +464,7 @@ function preview(doc,goBack){
 }
 function renderPdf(blob,target){
   let closed=false,task,picture,generation=0,documentPdf;
+  const preparation=new AbortController();
   const status=elem('p','Otwieranie PDF…','muted');status.setAttribute('role','status');
   const canvas=elem('canvas');canvas.hidden=true;canvas.setAttribute('aria-label','Podgląd strony PDF');
   const surface=append(elem('div',undefined,'pdf-surface'),canvas);
@@ -483,6 +501,10 @@ function renderPdf(blob,target){
   }
   void (async()=>{
     try{
+      await warmTool('pdf',(done,total,fraction)=>{
+        if(!closed)status.textContent='Przygotowywanie PDF · '+Math.round(100*(done+fraction)/total)+'%';
+      },preparation.signal);
+      if(!closed)status.textContent='Otwieranie PDF…';
       const pdf=await import('./pdf/pdf.min.js');
       pdf.GlobalWorkerOptions.workerSrc=new URL('./pdf/pdf.worker.min.js',import.meta.url).href;
       const data=await blob.arrayBuffer();
@@ -493,10 +515,21 @@ function renderPdf(blob,target){
       controls.hidden=false;await draw();
     }catch {if(!closed)status.textContent='Nie można wyświetlić PDF. Otwórz lub pobierz dokument.';}
   })();
-  return ()=>{closed=true;picture?.cancel();void task?.destroy().catch(()=>{});};
+  return ()=>{closed=true;preparation.abort();picture?.cancel();void task?.destroy().catch(()=>{});};
 }
-function detail(id){
-  const p=products.find(product=>product.id===id);
+async function detailRecord(title,read){
+  const loading=elem('p','Wczytywanie dokumentów…','muted');
+  loading.setAttribute('role','status');
+  open(title,loading);
+  try{
+    const result=await read();
+    if(!loading.isConnected||!editor.open)return;
+    if(result)return result;
+    loading.textContent='Ten rekord nie jest już dostępny.';
+  }catch(error){if(loading.isConnected)loading.textContent=errorText(error);}
+}
+async function detail(id){
+  const p=await detailRecord('Szczegóły produktu',()=>storage.product(id));
   if(!p)return;
   const back=()=>detail(id);
   const w=warranty(p);
@@ -600,8 +633,8 @@ function receiptList(){
   drawList();
 }
 
-function receiptDetail(id){
-  const r=receipts.find(receipt=>receipt.id===id);
+async function receiptDetail(id){
+  const r=await detailRecord('Szczegóły paragonu',()=>storage.receipt(id));
   if(!r)return;
   const back=()=>receiptDetail(id);
   const body=elem('div',undefined,'stack');
@@ -630,10 +663,12 @@ function receiptForm(previous,scanFirst=false){
   const nip=control('NIP sprzedawcy','nip',{value:r.nip,maxLength:16});
   nip.lastChild.inputMode='numeric';
   const payment=control('Forma płatności','payment',{choices:paymentOptions,value:r.payment??''});
-  const fields=append(elem('div',undefined,'fields'),store,date,total,nip,payment,
-    control('Waluta','currency',{choices:currencies,value:r.currency}),
-    control('Kategoria zakupów','category',{choices:receiptCategories,value:r.category}),
-    control('Notatki','notes',{type:'textarea',value:r.notes,maxLength:5000}));
+  const fields=append(elem('div',undefined,'stack'),
+    append(elem('div',undefined,'fields'),store,date,total,control('Waluta','currency',{choices:currencies,value:r.currency})),
+    append(elem('details',undefined,'optional-fields'),elem('summary','Więcej szczegółów'),
+      append(elem('div',undefined,'fields'),nip,payment,
+        control('Kategoria zakupów','category',{choices:receiptCategories,value:r.category}),
+        control('Notatki','notes',{type:'textarea',value:r.notes,maxLength:5000}))));
   const attachment=attachmentPicker(r.docs,false,true);
   attachment.wrap.querySelector('[name=docKind]').value='Paragon lub faktura';
   attachment.wrap.querySelector('[name=docKind]').closest('label').hidden=true;
@@ -664,10 +699,12 @@ function receiptForm(previous,scanFirst=false){
       }
       const result=await scanReceipt(input,progress=>{
         if(progress.status==='loading local model')scanStatus.textContent='Odczyt lokalnym modelem… Pierwsze uruchomienie może potrwać dłużej.';
+        if(progress.status==='tool download')scanStatus.textContent='Pobieranie '+progress.engine+' · '+Math.round(progress.progress*100)+'%';
         if(progress.status==='fallback')scanStatus.textContent='Sprawdzanie zdjęcia drugim silnikiem…';
         if(progress.status==='recognizing text')scanStatus.textContent='Skanowanie… '+Math.round(progress.progress*100)+'%';
       },controller.signal,{prepared:manual});
       if(controller.signal.aborted)return;
+      form.dataset.dirty='';
       raw.open=false;raw.hidden=!result.raw.trim();rawText.textContent=result.raw;
       const {source,processed,autoCrop,manualCrop,engine,passes,elapsedMs}=result.diagnostics;
       diagnostic.hidden=false;
@@ -722,11 +759,11 @@ function receiptForm(previous,scanFirst=false){
     select.disabled=Boolean(linked);
     const line=append(elem('div',undefined,'fields docs'),name,cost,quantity,unit,
       append(elem('label',undefined,'check'),select,elem('span',linked?'Produkt już zapisany':'Dodaj jako produkt')),
-      button('Usuń pozycję',()=>line.remove()));
+      button('Usuń pozycję',()=>{line.dispatchEvent(new Event('change',{bubbles:true}));line.remove();}));
     line.dataset.itemId=item.id??crypto.randomUUID();results.append(line);
   }
   r.items.forEach(addItem);
-  positionPanel.append(results,actions(button('Dodaj pozycję',()=>addItem())));
+  positionPanel.append(results,actions(button('Dodaj pozycję',()=>{form.dataset.dirty='';addItem();})));
   const scanning=append(panel('Skanuj paragon'),elem('p','Zdjęcie zostaje na urządzeniu. Odczytane dane możesz poprawić przed zapisaniem.','muted'),actions(scan,crop),scanStatus,review,raw,diagnostic);
   const body=scanFirst?append(elem('div'),attachment.wrap,scanning,fields,positionPanel):append(elem('div'),fields,attachment.wrap,scanning,positionPanel);
   const form=dialogForm(body,{wrap:elem('span'),list:attachment.list},async(data,docs)=>{
@@ -751,7 +788,16 @@ async function prepareWorker(){
   const registration=await worker.register('./sw.js',{updateViaCache:'none'});
   const show=()=>{
     if(!registration.waiting||!worker.controller)return;
-    updateNotice=()=>{worker.addEventListener('controllerchange',()=>location.reload(),{once:true});registration.waiting?.postMessage('activate');};
+    updateNotice=()=>{
+      if(editor.open||pending||uploadImport){notice('Najpierw zapisz lub zamknij formularz. Aktualizacja zaczeka.');return;}
+      const waiting=registration.waiting;
+      if(!waiting)return;
+      worker.addEventListener('controllerchange',()=>{
+        if(!editor.open&&!pending&&!uploadImport)location.reload();
+        else notice('Aktualizacja gotowa. Zapisz formularz przed ponownym otwarciem aplikacji.');
+      },{once:true});
+      waiting.postMessage('activate');
+    };
     notice('Dostępna jest aktualizacja. Zapisz rozpoczętą edycję przed jej zastosowaniem.');
     $('status').append(document.createTextNode(' '),button('Zaktualizuj aplikację',updateNotice));
   };

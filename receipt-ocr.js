@@ -1,3 +1,4 @@
+import {warmTool} from './offline-tools.js';
 import {dateValid,normalize} from './model.js';
 import {loadReceiptPhoto,detectReceipt,rectify,enhanceReceipt,imageBlob,rotateReceipt,receiptTotalRegion} from './receipt-image.js';
 
@@ -211,7 +212,10 @@ async function scanWithTesseract(image,onProgress,signal,{prepared=false}={}){
 export async function scanReceipt(image,onProgress,signal,options={}){
   let primary;
   onProgress({status:'loading local model'});
+  const loading=engine=>(done,total,fraction)=>onProgress({status:'tool download',engine,progress:(done+fraction)/total});
   try{
+    await warmTool('paddle',loading('PaddleOCR'),signal);
+    onProgress({status:'loading local model'});
     const {readWithPaddle}=await import('./receipt-paddle.js');
     const photo=await readWithPaddle(image,signal,options);
     const raw=photo.lines.map(line=>line.text).join('\n');
@@ -223,6 +227,8 @@ export async function scanReceipt(image,onProgress,signal,options={}){
   }
   onProgress({status:'fallback'});
   try{
+    await warmTool('tesseract',loading('Tesseract'),signal);
+    onProgress({status:'fallback'});
     const fallback=await scanWithTesseract(image,onProgress,signal,options);
     // An incomplete reading from the more accurate engine can still contribute
     // validated fields, while the fallback fills only unambiguous gaps.

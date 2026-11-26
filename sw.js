@@ -1,46 +1,42 @@
 const prefix='voltyro-domowy-shell-';
-const version=prefix+'7';
-const files=['./','./index.html','./style.css','./app.js','./storage.js','./backup.js','./model.js','./photo-viewer.js','./receipt-ocr.js','./receipt-image.js','./receipt-crop.js','./receipt-paddle.js','./receipt-paddle-worker.js','./ocr/tesseract.min.js','./ocr/worker.min.js','./ocr/tesseract-core-lstm.wasm.js','./ocr/pol.traineddata.gz','./manifest.webmanifest','./icon.svg',
-  './pdf/pdf.min.js', './pdf/pdf.worker.min.js',
-  './pdf/fonts/FoxitDingbats.pfb',
-  './pdf/fonts/FoxitFixed.pfb',
-  './pdf/fonts/FoxitFixedBold.pfb',
-  './pdf/fonts/FoxitFixedBoldItalic.pfb',
-  './pdf/fonts/FoxitFixedItalic.pfb',
-  './pdf/fonts/FoxitSerif.pfb',
-  './pdf/fonts/FoxitSerifBold.pfb',
-  './pdf/fonts/FoxitSerifBoldItalic.pfb',
-  './pdf/fonts/FoxitSerifItalic.pfb',
-  './pdf/fonts/FoxitSymbol.pfb',
-  './pdf/fonts/LiberationSans-Bold.ttf',
-  './pdf/fonts/LiberationSans-BoldItalic.ttf',
-  './pdf/fonts/LiberationSans-Italic.ttf',
-  './pdf/fonts/LiberationSans-Regular.ttf',
-  './icon-180.png','./icon-192.png','./icon-512.png','./icon-maskable.png'];
-const modelVersion='voltyro-domowy-ocr-model-1';
-const modelFiles=new Set(['engine.js','det.onnx','latin.onnx','latin.txt','ort-wasm-simd-threaded.mjs','ort-wasm-simd-threaded.wasm']
-  .map(path=>new URL('./ocr/paddle/'+path,self.registration.scope).href));
-const resources=new Set(files.map(path=>new URL(path,self.registration.scope).href));
+const version=prefix+'8';
+const files=['./','./index.html','./style.css','./app.js','./storage.js','./backup.js','./model.js','./photo-viewer.js',
+  './receipt-ocr.js','./receipt-image.js','./receipt-crop.js','./receipt-paddle.js','./receipt-paddle-worker.js','./offline-tools.js',
+  './manifest.webmanifest','./icon.svg','./icon-180.png','./icon-192.png','./icon-512.png','./icon-maskable.png'];
+const toolsVersion='voltyro-domowy-tools-1';
+const legacyModel='voltyro-domowy-ocr-model-1';
+const scope=new URL(self.registration.scope);
+const resources=new Set(files.map(path=>new URL(path,scope).href));
+const toolPath=url=>url.origin===scope.origin&&url.pathname.startsWith(scope.pathname)&&
+  /^(pdf\/|ocr\/)/.test(url.pathname.slice(scope.pathname.length));
 self.addEventListener('install',event=>event.waitUntil((async()=>{
   const cache=await caches.open(version);
   await cache.addAll(files.map(path=>new Request(path,{cache:'reload'})));
-  // Older installed shells only offer manual activation. Promote this release
-  // after the whole shell is cached so the next launch uses the new OCR.
-  await self.skipWaiting();
 })()));
 self.addEventListener('message',event=>{if(event.data==='activate')event.waitUntil(self.skipWaiting());});
 self.addEventListener('activate',event=>event.waitUntil((async()=>{
-  for(const key of await caches.keys())if(key.startsWith(prefix)&&key!==version)await caches.delete(key);
+  const keys=await caches.keys();
+  const tools=await caches.open(toolsVersion);
+  for(const key of keys.filter(key=>key===legacyModel||key.startsWith(prefix)&&key!==version)){
+    const previous=await caches.open(key);
+    for(const req of await previous.keys()){
+      if(!toolPath(new URL(req.url))||await tools.match(req))continue;
+      const saved=await previous.match(req);
+      if(saved)await tools.put(req,saved).catch(()=>{});
+    }
+    if(key.startsWith(prefix)&&key!==prefix+'7')await caches.delete(key);
+  }
+  // Retain the immediately preceding shell through the transition.
   await self.clients.claim();
 })()));
 self.addEventListener('fetch',event=>{
   const {request}=event;
-  const url=new URL(request.url),scope=new URL(self.registration.scope);
+  const url=new URL(request.url);
   if(request.method!=='GET'||url.origin!==scope.origin)return;
   const home=request.mode==='navigate'&&(url.pathname===scope.pathname||url.pathname===scope.pathname+'index.html');
-  if(modelFiles.has(url.href)){
+  if(toolPath(url)){
     event.respondWith((async()=>{
-      const cache=await caches.open(modelVersion).catch(()=>null);
+      const cache=await caches.open(toolsVersion).catch(()=>null);
       const saved=await cache?.match(request).catch(()=>null);
       if(saved)return saved;
       const response=await fetch(request);

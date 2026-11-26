@@ -19,11 +19,35 @@ const revised=row=>({...row,revision:crypto.randomUUID()});
 const conflict=()=>Object.assign(Error('Ten rekord zmienił się w innej karcie. Treść formularza została zachowana. Skopiuj swoje zmiany, a następnie otwórz aktualny rekord i nanieś je ponownie.'),{name:'RevisionConflict'});
 const recoveryFailure=error=>Object.assign(Error('Nie udało się zapisać punktu odzyskiwania. Bieżące dane pozostały bez zmian.'),{name:error?.name==='QuotaExceededError'?'QuotaExceededError':'RecoveryError',cause:error});
 
+const summaries={products:'productSummaries',receipts:'receiptSummaries'};
+function project(store,{docs,history,items,...row}){
+  return store==='receipts'?{...row,items:(items??[]).map(({name})=>({name}))}:row;
+}
+function writeRecord(store,row,method='put'){
+  store.transaction.objectStore(summaries[store.name]).put(project(store.name,row));
+  return store[method](row);
+}
+function deleteRecord(store,id){
+  store.transaction.objectStore(summaries[store.name]).delete(id);
+  return store.delete(id);
+}
+
 export async function openStorage(name='voltyro-domowy-v1') {
-  const open=indexedDB.open(name,4);
+  const open=indexedDB.open(name,5);
   open.onupgradeneeded=()=>{
     for(const store of ['products','receipts','categories','recovery'])if(!open.result.objectStoreNames.contains(store))
       open.result.createObjectStore(store,{keyPath:['categories','recovery'].includes(store)?'key':'id'});
+    for(const [source,target] of Object.entries(summaries)){
+      if(open.result.objectStoreNames.contains(target))continue;
+      const projection=open.result.createObjectStore(target,{keyPath:'id'});
+      const cursor=open.transaction.objectStore(source).openCursor();
+      cursor.onsuccess=()=>{
+        const row=cursor.result;
+        if(!row)return;
+        projection.put(project(source,row.value));
+        row.continue();
+      };
+    }
   };
   const db=await new Promise((resolve,reject)=>{
     let blocked=false;
@@ -38,7 +62,7 @@ export async function openStorage(name='voltyro-domowy-v1') {
   const names=['products','receipts','categories'];
   function run(mode,callback) {
     return new Promise((resolve,reject)=>{
-      const tx=db.transaction([...names,'recovery'],mode);
+      const tx=db.transaction([...names,'recovery',...Object.values(summaries)],mode);
       let result,reason;
       const abort=error=>{reason=error;tx.abort();};
       const when=(req,next)=>{req.onsuccess=()=>{
@@ -55,9 +79,9 @@ export async function openStorage(name='voltyro-domowy-v1') {
     when(categories,rows=>complete({products:products.result,receipts:receipts.result,categories:rows}));
   }
   function restoreRows(s,r,c,rows) {
-    for(const store of [s,r,c])store.clear();
-    for(const row of rows.products)s.add(revised(row));
-    for(const row of rows.receipts)r.add(revised(row));
+    for(const store of [s,r,c,...Object.values(summaries).map(name=>s.transaction.objectStore(name))])store.clear();
+    for(const row of rows.products)writeRecord(s,revised(row),'add');
+    for(const row of rows.receipts)writeRecord(r,revised(row),'add');
     for(const row of rows.categories)c.add(row);
   }
   function expectRevision(current,expected) {
@@ -77,7 +101,7 @@ export async function openStorage(name='voltyro-domowy-v1') {
         const key='deleted:'+crypto.randomUUID();
         const finish=links=>{
           saveRecovery(h,{key,kind,row,links,at:new Date().toISOString(),label:row.name??row.store});
-          store.delete(id);
+          deleteRecord(store,id);
         };
         if(kind==='product')return finish([]);
         when(s.getAll(),products=>{
@@ -86,7 +110,7 @@ export async function openStorage(name='voltyro-domowy-v1') {
             const {receiptId,...withoutReceipt}=product;
             const updated=revised(withoutReceipt);
             links.push({id:product.id,revision:updated.revision});
-            s.put(updated);
+            writeRecord(s,updated);
           }
           finish(links);
         });
@@ -95,6 +119,14 @@ export async function openStorage(name='voltyro-domowy-v1') {
   }
   return {
     close:()=>db.close(),
+    overview:()=>run('readonly',(s,_r,c,_h,when,done)=>{
+      const products=s.transaction.objectStore(summaries.products).getAll();
+      const receipts=s.transaction.objectStore(summaries.receipts).getAll();
+      when(c.getAll(),categories=>done({products:products.result,receipts:receipts.result,
+        categories:categories.map(({name})=>name)}));
+    }),
+    product:id=>run('readonly',(s,_r,_c,_h,when,done)=>when(s.get(id),row=>done(row&&decodeProduct(row)))),
+    receipt:id=>run('readonly',(_s,r,_c,_h,when,done)=>when(r.get(id),row=>done(row&&decodeReceipt(row)))),
     list:async()=>(await run('readonly',(s,_r,_c,_h,when,done)=>when(s.getAll(),done))).map(decodeProduct),
     receipts:async()=>(await run('readonly',(_s,r,_c,_h,when,done)=>when(r.getAll(),done))).map(decodeReceipt),
     snapshot:()=>run('readonly',(s,r,c,_h,when,done)=>{
@@ -114,7 +146,7 @@ export async function openStorage(name='voltyro-domowy-v1') {
           expectRevision(current,revision);
           const persist=()=>{
             if(customName)c.put({key:categoryKey(customName),name:customName});
-            s.put(revised(encoded));
+            writeRecord(s,revised(encoded));
           };
           if(!product.receiptId)return persist();
           when(r.get(product.receiptId),receipt=>{
@@ -129,8 +161,8 @@ export async function openStorage(name='voltyro-domowy-v1') {
       return run('readwrite',(s,r,_c,_h,when)=>{
         when(r.get(receipt.id),current=>{
           expectRevision(current,revision);
-          r.put(revised(encoded));
-          for(const product of products)when(s.get(product.id),existing=>{if(!existing)s.add(revised(product));});
+          writeRecord(r,revised(encoded));
+          for(const product of products)when(s.get(product.id),existing=>{if(!existing)writeRecord(s,revised(product),'add');});
         });
       });
     },
@@ -143,7 +175,7 @@ export async function openStorage(name='voltyro-domowy-v1') {
         if(!row)throw conflict();
         saveRecovery(h,{key:'deleted:'+crypto.randomUUID(),kind:'case',productId:id,row,
           at:new Date().toISOString(),label:row.issue});
-        s.put(revised({...product,history:product.history.filter(entry=>entry.id!==caseId)}));
+        writeRecord(s,revised({...product,history:product.history.filter(entry=>entry.id!==caseId)}));
       });
     }),
     replace:async(products,receipts=[],custom=[])=>{
@@ -172,7 +204,7 @@ export async function openStorage(name='voltyro-domowy-v1') {
           if(!product)throw Error('Najpierw odzyskaj produkt powiązany ze sprawą.');
           if(product.history.some(item=>item.id===entry.row.id))throw conflict();
           if(product.history.length>=200)throw Error('Osiągnięto limit spraw dla tego produktu.');
-          s.put(revised({...product,history:[...product.history,entry.row]}));
+          writeRecord(s,revised({...product,history:[...product.history,entry.row]}));
           discard();
         });
         const store=entry.kind==='product'?s:r;
@@ -181,9 +213,9 @@ export async function openStorage(name='voltyro-domowy-v1') {
           if(entry.kind==='product'&&entry.row.receiptId)when(r.get(entry.row.receiptId),receipt=>{
             if(!receipt)throw Error('Najpierw odzyskaj powiązany paragon.');
           });
-          store.add(revised(entry.row));
+          writeRecord(store,revised(entry.row),'add');
           for(const link of entry.links)when(s.get(link.id),product=>{
-            if(product?.revision===link.revision)s.put(revised({...product,receiptId:entry.row.id}));
+            if(product?.revision===link.revision)writeRecord(s,revised({...product,receiptId:entry.row.id}));
           });
           discard();
         });
